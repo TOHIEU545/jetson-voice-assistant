@@ -1,0 +1,141 @@
+===== SYSTEM =====
+Linux jetson 4.9.253-tegra #1 SMP PREEMPT Sat Feb 19 08:59:22 PST 2022 aarch64 aarch64 aarch64 GNU/Linux
+
+===== CUDA =====
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2021 NVIDIA Corporation
+Built on Sun_Feb_28_22:34:44_PST_2021
+Cuda compilation tools, release 10.2, V10.2.300
+Build cuda_10.2_r440.TC440_70.29663091_0
+
+===== LLAMA.CPP =====
+
+===== MODELS =====
+/home/ptit/jetson-voice-assistant/models/vad/silero_vad.onnx  632 KB
+/home/ptit/jetson-voice-assistant/models/llm/gemma-3-1b-it-Q4_K_M.gguf  787172 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/tiny.en-decoder.int8.onnx  87748 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/tiny.en-encoder.int8.onnx  12636 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/log.txt  64 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/tiny.en-decoder.onnx  111824 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/tiny.en-encoder.onnx  36768 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/test_wavs/8k.wav  76 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/test_wavs/1.wav  524 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/test_wavs/trans.txt  4 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/test_wavs/0.wav  208 KB
+/home/ptit/jetson-voice-assistant/models/stt/whisper-tiny.en/tiny.en-tokens.txt  816 KB
+
+===== LLAMA SERVER CONFIG =====
+#!/bin/bash
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+LLAMA_BIN="$PROJECT_ROOT/runtime/llama.cpp/bin/llama-server"
+LLAMA_LIB="$PROJECT_ROOT/runtime/llama.cpp/lib"
+
+MODEL="$PROJECT_ROOT/models/llm/gemma-3-1b-it-Q4_K_M.gguf"
+
+LOG_DIR="$PROJECT_ROOT/logs"
+LOG="$LOG_DIR/llama_server.log"
+PID_FILE="$LOG_DIR/llama_server.pid"
+
+mkdir -p "$LOG_DIR"
+
+start_server() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "llama-server is already running."
+            echo "PID: $PID"
+            exit 0
+        fi
+
+        rm -f "$PID_FILE"
+    fi
+
+    LD_LIBRARY_PATH="$LLAMA_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    "$LLAMA_BIN" \
+        -m "$MODEL" \
+        --host 127.0.0.1 \
+        --port 8080 \
+        -c 2048 \
+        -ngl 99 \
+        -t 2 \
+        > "$LOG" 2>&1 &
+
+    echo $! > "$PID_FILE"
+
+    echo "llama-server started."
+    echo "PID: $(cat "$PID_FILE")"
+    echo "Model: $MODEL"
+    echo "Log: $LOG"
+}
+
+stop_server() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+
+        if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"
+            echo "llama-server stopped."
+        else
+            echo "llama-server is not running."
+        fi
+
+        rm -f "$PID_FILE"
+    else
+        echo "llama-server is not running."
+    fi
+}
+
+status_server() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "llama-server is running."
+            echo "PID: $PID"
+
+            HEALTH=$(curl -s http://127.0.0.1:8080/health)
+
+            if [ -n "$HEALTH" ]; then
+                echo "Health: $HEALTH"
+            fi
+
+            exit 0
+        fi
+    fi
+
+    echo "llama-server is not running."
+}
+
+case "${1:-start}" in
+    start)
+        start_server
+        ;;
+    stop)
+        stop_server
+        ;;
+    status)
+        status_server
+        ;;
+    *)
+        echo "Usage: $0 [start|stop|status]"
+        exit 1
+        ;;
+esac
+
+===== VOICE PIPELINE =====
+LLM_URL = "http://127.0.0.1:8080/v1/chat/completions"
+MIC_DEVICE = "plughw:2,0"
+    "--provider=cpu",
+    "--vad-provider=cpu",
+    "--num-threads=2",
+    "--vad-num-threads=1",
+    "--silero-vad-threshold=0.5",
+    "--silero-vad-max-speech-duration=60",
+    MIC_DEVICE,
+            "max_tokens": 512,
+            "temperature": 0.7
+            LLM_URL,

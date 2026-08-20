@@ -1,0 +1,73 @@
+diff --git a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
+index 244a2480..3bf70d71 100644
+--- a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
+@@ -7,6 +7,7 @@
+ #include <stdlib.h>
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <memory>
+ #include <mutex>  // NOLINT
+ #include <string>
+@@ -138,21 +139,60 @@ as the device_name.
+   int32_t window_size = vad_config.silero_vad.window_size;
+   int32_t index = 0;
+ 
++  // Total number of audio samples already fed into VAD.
++  // Used to calculate the VAD endpoint delay on the audio timeline.
++  int64_t total_samples = 0;
++
+   while (!stop) {
+     const std::vector<float> &samples = alsa.Read(window_size);
++
+     vad->AcceptWaveform(samples.data(), samples.size());
++    total_samples += static_cast<int64_t>(samples.size());
+ 
+     while (!vad->Empty()) {
+       const auto &segment = vad->Front();
++
++      // End of actual speech on the audio sample timeline.
++      const int64_t speech_end_sample =
++          static_cast<int64_t>(segment.start) +
++          static_cast<int64_t>(segment.samples.size());
++
++      // Time from actual speech end until VAD produces the completed segment.
++      const double vad_latency =
++          static_cast<double>(total_samples - speech_end_sample) /
++          static_cast<double>(sample_rate);
++
++      // Time from completed VAD segment until transcription is ready.
++      const auto stt_start = std::chrono::steady_clock::now();
++
+       auto s = recognizer.CreateStream();
+       s->AcceptWaveform(sample_rate, segment.samples.data(),
+                         segment.samples.size());
++
+       recognizer.DecodeStream(s.get());
+       const auto &result = s->GetResult();
++
++      const auto stt_end = std::chrono::steady_clock::now();
++
++      const double stt_latency =
++          std::chrono::duration<double>(stt_end - stt_start).count();
++
++      const double total_latency = vad_latency + stt_latency;
++
+       if (!result.text.empty()) {
+         fprintf(stderr, "%2d: %s\n", index, result.text.c_str());
++
++        fprintf(stderr,
++                "[LATENCY] VAD   : %.3f s\n"
++                "[LATENCY] STT   : %.3f s\n"
++                "[LATENCY] TOTAL : %.3f s\n",
++                vad_latency,
++                stt_latency,
++                total_latency);
++
+         ++index;
+       }
++
+       vad->Pop();
+     }
+   }

@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Local runtime / third-party dependencies
+runtime/
+
+# Models
+models/
+*.onnx
+*.gguf
+
+# Runtime logs
+logs/conversations/
+logs/*.log
+logs/*.pid
+
+# Build artifacts
+build/
+**/build/
+
+# Manual backups / archives
+*.bak
+*.pre-latency
+*.tar.gz
+*.zip
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
