@@ -353,9 +353,17 @@ try:
         if not text:
             continue
 
-        # Transcript Gate: ignore Whisper noise/non-speech annotations
-        if text.startswith("("):
-            print("[Ignored STT noise]:", text)
+        # Transcript Gate:
+        # Whisper often emits (), [] or {} for non-speech/audio annotations.
+        # For this assistant, treat any transcript containing these markers
+        # as suspicious and do not send it to the LLM.
+        if any(ch in text for ch in "()[]{}"):
+            print('[GATE] DROP [whisper_annotation]: "{}"'.format(text))
+
+            log_file.write(
+                '[GATE DROP] whisper_annotation: "{}"\n'.format(text)
+            )
+
             continue
 
         turn_index += 1
