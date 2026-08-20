@@ -1,0 +1,15 @@
+PATH=runtime/llama.cpp/bin/llama-server
+
+VERSION:
+ggml_cuda_init: GGML_CUDA_FORCE_MMQ:    no
+ggml_cuda_init: GGML_CUDA_FORCE_CUBLAS: no
+ggml_cuda_init: found 1 CUDA devices:
+  Device 0: NVIDIA Tegra X1, compute capability 5.3, VMM: no
+version: 5050 (23106f94)
+built with cc (GCC) 8.5.0 for aarch64-unknown-linux-gnu
+
+FILE:
+runtime/llama.cpp/bin/llama-server: ELF 64-bit LSB executable, ARM aarch64, version 1 (GNU/Linux), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, for GNU/Linux 3.7.0, not stripped
+
+SHA256:
+bf57180473744653d243d6cd8715b6ee5f97e1154e9b6a486b52af3e08d9706b  runtime/llama.cpp/bin/llama-server

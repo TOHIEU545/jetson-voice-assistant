@@ -1,0 +1,12 @@
+9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6  models/vad/silero_vad.onnx
+8ccc5cd1f1b3602548715ae25a66ed73fd5dc68a210412eea643eb20eb75a135  models/llm/gemma-3-1b-it-Q4_K_M.gguf
+06c0e6ff6348d427e51839219d1c886c18cfdf411e629e33f5e1679bff9c1527  models/stt/whisper-tiny.en/tiny.en-decoder.int8.onnx
+0ce578b827c94a961aacb8fa14b02f096504b337e5c94be37c36238cbe3e8bc6  models/stt/whisper-tiny.en/tiny.en-encoder.int8.onnx
+d13b4371a115402d943ccc36a25d67d436eb4cf4c7656ab90183221cb107ad2f  models/stt/whisper-tiny.en/log.txt
+54d5a5fd2a757175aeb70a837a8404fc9c31b659610724694f5a0e2c51715f94  models/stt/whisper-tiny.en/tiny.en-decoder.onnx
+dc7de696432d97a3d64387800b230ac69d18e5e4efea0eec0613209dd8b7b0c9  models/stt/whisper-tiny.en/tiny.en-encoder.onnx
+f6f3c8b33e2534cdc154fe773ad2750f1f6a2ca5096179cdf037ae782456613e  models/stt/whisper-tiny.en/test_wavs/8k.wav
+5143a6ba93c4b274e2c4ac22deb75c2c48936c853f0519add1de828b6c79cc5a  models/stt/whisper-tiny.en/test_wavs/1.wav
+b9ac44e7b794abb1a2d5faf0005e98a665971e7ac2ed15435832cc34edaa9100  models/stt/whisper-tiny.en/test_wavs/trans.txt
+6bc58a4efdf20daac252b6b1502632601a71efe0308f6757dc1eda34891a7e4f  models/stt/whisper-tiny.en/test_wavs/0.wav
+306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930  models/stt/whisper-tiny.en/tiny.en-tokens.txt

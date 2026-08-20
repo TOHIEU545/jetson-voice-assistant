@@ -1,0 +1,12 @@
+llm/gemma-3-1b-it-Q4_K_M.gguf	806058240 bytes
+stt/whisper-tiny.en/log.txt	58513 bytes
+stt/whisper-tiny.en/test_wavs/0.wav	212044 bytes
+stt/whisper-tiny.en/test_wavs/1.wav	534924 bytes
+stt/whisper-tiny.en/test_wavs/8k.wav	77244 bytes
+stt/whisper-tiny.en/test_wavs/trans.txt	449 bytes
+stt/whisper-tiny.en/tiny.en-decoder.int8.onnx	89853865 bytes
+stt/whisper-tiny.en/tiny.en-decoder.onnx	114504265 bytes
+stt/whisper-tiny.en/tiny.en-encoder.int8.onnx	12937772 bytes
+stt/whisper-tiny.en/tiny.en-encoder.onnx	37647080 bytes
+stt/whisper-tiny.en/tiny.en-tokens.txt	835554 bytes
+vad/silero_vad.onnx	643854 bytes
