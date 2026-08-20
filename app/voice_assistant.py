@@ -288,23 +288,49 @@ try:
                         json.dumps(full_record) + "\n"
                     )
 
+                    print()
                     print(
-                        "[FULL LATENCY] Speech end -> first token"
-                        " : {:.3f} s".format(
-                            full_record[
-                                "speech_end_to_first_token_s"
-                            ]
+                        "[LATENCY] VAD          T0->T1 : {:.3f} s".format(
+                            full_record["vad_s"]
                         )
                     )
-
                     print(
-                        "[FULL LATENCY] Speech end -> last token "
-                        " : {:.3f} s".format(
-                            full_record[
-                                "speech_end_to_last_token_s"
-                            ]
+                        "[LATENCY] STT          T1->T2 : {:.3f} s".format(
+                            full_record["stt_s"]
                         )
                     )
+                    print(
+                        "[LATENCY] VAD + STT    T0->T2 : {:.3f} s".format(
+                            full_record["vad_stt_total_s"]
+                        )
+                    )
+                    print(
+                        "[LATENCY] Python       T2->T3 : {:.3f} s".format(
+                            full_record["python_overhead_s"]
+                        )
+                    )
+                    print(
+                        "[LATENCY] LLM TTFT     T3->T4 : {:.3f} s".format(
+                            full_record["llm_ttft_s"]
+                        )
+                    )
+                    print(
+                        "[LATENCY] LLM Gen      T4->T5 : {:.3f} s".format(
+                            full_record["llm_generation_s"]
+                        )
+                    )
+                    print("-------------------------------------------")
+                    print(
+                        "[FULL] Speech -> First T0->T4 : {:.3f} s".format(
+                            full_record["speech_end_to_first_token_s"]
+                        )
+                    )
+                    print(
+                        "[FULL] Speech -> Last  T0->T5 : {:.3f} s".format(
+                            full_record["speech_end_to_last_token_s"]
+                        )
+                    )
+                    print("\nSpeak...")
 
                 pending_turn = None
                 pending_vad_latency = None
@@ -465,28 +491,8 @@ try:
                 # Save this turn so those lines can be associated with it.
                 pending_turn = dict(latency_record)
 
-                print(
-                    "\n[LATENCY] Python T2->T3 : {:.3f} s".format(
-                        python_overhead
-                    )
-                )
-                print(
-                    "[LATENCY] LLM T3->T4    : {:.3f} s".format(
-                        llm_ttft
-                    )
-                )
-                print(
-                    "[LATENCY] LLM T4->T5    : {:.3f} s".format(
-                        llm_generation
-                    )
-                )
-                print(
-                    "[LATENCY] T2->T4         : {:.3f} s".format(
-                        transcript_to_first
-                    )
-                )
-
-            print("\nSpeak...")
+            # Full latency summary is printed after the VAD/STT
+            # measurements for this turn are received from sherpa.
 
         except Exception as e:
 
