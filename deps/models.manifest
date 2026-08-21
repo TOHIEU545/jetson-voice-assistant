@@ -10,3 +10,4 @@ stt/whisper-tiny.en/tiny.en-encoder.int8.onnx	12937772 bytes
 stt/whisper-tiny.en/tiny.en-encoder.onnx	37647080 bytes
 stt/whisper-tiny.en/tiny.en-tokens.txt	835554 bytes
 vad/silero_vad.onnx	643854 bytes
+enhancement/gtcrn_simple.onnx	535638 bytes
