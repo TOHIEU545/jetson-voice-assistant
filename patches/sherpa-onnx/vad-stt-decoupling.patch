@@ -1,0 +1,186 @@
+diff --git a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
+index 3bf70d71..79a18fd8 100644
+--- a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
+@@ -8,9 +8,13 @@
+ 
+ #include <algorithm>
+ #include <chrono>
++#include <condition_variable>
+ #include <memory>
+ #include <mutex>  // NOLINT
++#include <queue>
+ #include <string>
++#include <thread>
++#include <utility>
+ #include <vector>
+ 
+ #include "sherpa-onnx/csrc/alsa.h"
+@@ -137,47 +141,73 @@ as the device_name.
+   fprintf(stderr, "Started. Please speak\n");
+ 
+   int32_t window_size = vad_config.silero_vad.window_size;
+-  int32_t index = 0;
+ 
+   // Total number of audio samples already fed into VAD.
+   // Used to calculate the VAD endpoint delay on the audio timeline.
+   int64_t total_samples = 0;
+ 
+-  while (!stop) {
+-    const std::vector<float> &samples = alsa.Read(window_size);
++  struct SpeechSegment {
++    int32_t turn_id;
++    std::vector<float> samples;
++    double vad_latency;
++    std::chrono::steady_clock::time_point ready_time;
++  };
+ 
+-    vad->AcceptWaveform(samples.data(), samples.size());
+-    total_samples += static_cast<int64_t>(samples.size());
++  std::queue<SpeechSegment> speech_queue;
++  std::mutex speech_queue_mutex;
++  std::condition_variable speech_queue_cv;
+ 
+-    while (!vad->Empty()) {
+-      const auto &segment = vad->Front();
++  // Protected by speech_queue_mutex.
++  bool producer_done = false;
+ 
+-      // End of actual speech on the audio sample timeline.
+-      const int64_t speech_end_sample =
+-          static_cast<int64_t>(segment.start) +
+-          static_cast<int64_t>(segment.samples.size());
++  // Assigned only by the Audio/VAD producer.
++  int32_t next_turn_id = 0;
+ 
+-      // Time from actual speech end until VAD produces the completed segment.
+-      const double vad_latency =
+-          static_cast<double>(total_samples - speech_end_sample) /
+-          static_cast<double>(sample_rate);
++  // Whisper recognizer was created once above and remains resident.
++  // Only this worker performs STT inference.
++  std::thread stt_worker([&]() {
++    // Keep the existing transcript numbering contract unchanged.
++    int32_t index = 0;
++
++    while (true) {
++      SpeechSegment item;
++
++      {
++        std::unique_lock<std::mutex> lock(speech_queue_mutex);
++
++        speech_queue_cv.wait(lock, [&]() {
++          return producer_done || !speech_queue.empty();
++        });
++
++        if (speech_queue.empty()) {
++          if (producer_done) {
++            break;
++          }
++
++          continue;
++        }
+ 
+-      // Time from completed VAD segment until transcription is ready.
+-      const auto stt_start = std::chrono::steady_clock::now();
++        item = std::move(speech_queue.front());
++        speech_queue.pop();
++      }
+ 
+-      auto s = recognizer.CreateStream();
+-      s->AcceptWaveform(sample_rate, segment.samples.data(),
+-                        segment.samples.size());
++      // Queue mutex is released before Whisper inference.
++      auto stream = recognizer.CreateStream();
++      stream->AcceptWaveform(sample_rate, item.samples.data(),
++                             item.samples.size());
+ 
+-      recognizer.DecodeStream(s.get());
+-      const auto &result = s->GetResult();
++      recognizer.DecodeStream(stream.get());
++      const auto &result = stream->GetResult();
+ 
+       const auto stt_end = std::chrono::steady_clock::now();
+ 
++      // T1 -> T2:
++      // VAD segment ready -> transcript ready.
++      // Queue waiting time is intentionally included.
+       const double stt_latency =
+-          std::chrono::duration<double>(stt_end - stt_start).count();
++          std::chrono::duration<double>(stt_end - item.ready_time).count();
+ 
+-      const double total_latency = vad_latency + stt_latency;
++      const double total_latency = item.vad_latency + stt_latency;
+ 
+       if (!result.text.empty()) {
+         fprintf(stderr, "%2d: %s\n", index, result.text.c_str());
+@@ -186,16 +216,68 @@ as the device_name.
+                 "[LATENCY] VAD   : %.3f s\n"
+                 "[LATENCY] STT   : %.3f s\n"
+                 "[LATENCY] TOTAL : %.3f s\n",
+-                vad_latency,
++                item.vad_latency,
+                 stt_latency,
+                 total_latency);
+ 
+         ++index;
+       }
++    }
++  });
++
++  while (!stop) {
++    const std::vector<float> &samples = alsa.Read(window_size);
++
++    vad->AcceptWaveform(samples.data(), samples.size());
++    total_samples += static_cast<int64_t>(samples.size());
++
++    while (!vad->Empty()) {
++      const auto &segment = vad->Front();
++
++      // T1: VAD has produced a completed speech segment.
++      const auto ready_time = std::chrono::steady_clock::now();
++
++      // End of actual speech on the audio sample timeline.
++      const int64_t speech_end_sample =
++          static_cast<int64_t>(segment.start) +
++          static_cast<int64_t>(segment.samples.size());
++
++      // T0 -> T1: actual speech end -> VAD segment ready.
++      const double vad_latency =
++          static_cast<double>(total_samples - speech_end_sample) /
++          static_cast<double>(sample_rate);
++
++      SpeechSegment item;
++      item.turn_id = next_turn_id++;
++
++      // Copy the samples before vad->Pop().
++      // The queued item owns independent audio storage.
++      item.samples = segment.samples;
++      item.vad_latency = vad_latency;
++      item.ready_time = ready_time;
++
++      {
++        std::lock_guard<std::mutex> lock(speech_queue_mutex);
++        speech_queue.push(std::move(item));
++      }
+ 
++      // Safe only after the queue owns the audio samples.
+       vad->Pop();
++
++      speech_queue_cv.notify_one();
+     }
+   }
+ 
++  // No new speech segments will be produced after this point.
++  {
++    std::lock_guard<std::mutex> lock(speech_queue_mutex);
++    producer_done = true;
++  }
++
++  // Wake the worker if it is waiting. It drains the queue before exiting.
++  speech_queue_cv.notify_all();
++
++  stt_worker.join();
++
+   return 0;
+ }
