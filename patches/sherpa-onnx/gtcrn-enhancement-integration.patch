@@ -1,0 +1,118 @@
+--- a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
+@@ -21,6 +21,7 @@
+ #include "sherpa-onnx/csrc/macros.h"
+ #include "sherpa-onnx/csrc/circular-buffer.h"
+ #include "sherpa-onnx/csrc/offline-recognizer.h"
++#include "sherpa-onnx/csrc/online-speech-denoiser.h"
+ #include "sherpa-onnx/csrc/resample.h"
+ #include "sherpa-onnx/csrc/voice-activity-detector.h"
+ 
+@@ -94,11 +95,12 @@
+ 
+   sherpa_onnx::ParseOptions po(kUsageMessage);
+   sherpa_onnx::VadModelConfig vad_config;
+-
+   sherpa_onnx::OfflineRecognizerConfig asr_config;
++  sherpa_onnx::OnlineSpeechDenoiserConfig denoiser_config;
+ 
+   vad_config.Register(&po);
+   asr_config.Register(&po);
++  denoiser_config.Register(&po);
+ 
+   po.Read(argc, argv);
+   if (po.NumArgs() != 1) {
+@@ -110,6 +112,13 @@
+   fprintf(stderr, "%s\n", vad_config.ToString().c_str());
+   fprintf(stderr, "%s\n", asr_config.ToString().c_str());
+ 
++  const bool enhancement_enabled =
++      !denoiser_config.model.gtcrn.model.empty();
++
++  if (enhancement_enabled) {
++    fprintf(stderr, "%s\n", denoiser_config.ToString().c_str());
++  }
++
+   if (!vad_config.Validate()) {
+     fprintf(stderr, "Errors in vad_config!\n");
+     return -1;
+@@ -120,6 +129,11 @@
+     return -1;
+   }
+ 
++  if (enhancement_enabled && !denoiser_config.Validate()) {
++    fprintf(stderr, "Errors in denoiser_config!\n");
++    return -1;
++  }
++
+   fprintf(stderr, "Creating recognizer ...\n");
+   sherpa_onnx::OfflineRecognizer recognizer(asr_config);
+   fprintf(stderr, "Recognizer created!\n");
+@@ -138,12 +152,41 @@
+     SHERPA_ONNX_EXIT(-1);
+   }
+ 
++  std::unique_ptr<sherpa_onnx::OnlineSpeechDenoiser> denoiser;
++
++  if (enhancement_enabled) {
++    fprintf(stderr, "[ENHANCEMENT] GTCRN: ON\n");
++    fprintf(stderr, "[ENHANCEMENT] Creating online denoiser ...\n");
++
++    denoiser =
++        std::make_unique<sherpa_onnx::OnlineSpeechDenoiser>(
++            denoiser_config);
++
++    if (denoiser->GetSampleRate() != sample_rate) {
++      fprintf(stderr,
++              "[ENHANCEMENT] sample rate: %d != %d\n",
++              denoiser->GetSampleRate(),
++              sample_rate);
++      SHERPA_ONNX_EXIT(-1);
++    }
++
++    fprintf(stderr,
++            "[ENHANCEMENT] Online denoiser created. "
++            "Frame shift: %d samples\n",
++            denoiser->GetFrameShiftInSamples());
++  } else {
++    fprintf(stderr, "[ENHANCEMENT] GTCRN: OFF\n");
++  }
++
+   fprintf(stderr, "Started. Please speak\n");
+ 
+   int32_t window_size = vad_config.silero_vad.window_size;
+ 
+-  // Total number of audio samples already fed into VAD.
+-  // Used to calculate the VAD endpoint delay on the audio timeline.
++  // Total number of raw microphone samples captured from ALSA.
++  //
++  // With enhancement enabled, GTCRN can internally buffer samples.
++  // Keeping this counter on the raw microphone timeline ensures the
++  // existing T0 -> T1 latency also includes enhancement buffering.
+   int64_t total_samples = 0;
+ 
+   struct SpeechSegment {
+@@ -228,9 +271,22 @@
+   while (!stop) {
+     const std::vector<float> &samples = alsa.Read(window_size);
+ 
+-    vad->AcceptWaveform(samples.data(), samples.size());
++    // Track the real microphone timeline before optional enhancement.
+     total_samples += static_cast<int64_t>(samples.size());
+ 
++    if (denoiser) {
++      auto enhanced =
++          denoiser->Run(samples.data(), samples.size(), sample_rate);
++
++      if (!enhanced.samples.empty()) {
++        vad->AcceptWaveform(
++            enhanced.samples.data(),
++            enhanced.samples.size());
++      }
++    } else {
++      vad->AcceptWaveform(samples.data(), samples.size());
++    }
++
+     while (!vad->Empty()) {
+       const auto &segment = vad->Front();
+ 

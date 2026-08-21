@@ -1849,9 +1849,9 @@ T4 → T5 LLM generation
 ### Ngoài scope Phase 4
 
 ```text
-GTCRN integration
-ConversationManager
-LLMBackend abstraction
+GTCRN integration → Phase 4.5
+ConversationManager → Phase 5
+LLMBackend abstraction → Phase 6
 Smart Turn
 speculative turn / cancellation
 barge-in
@@ -1859,6 +1859,121 @@ TTS
 ```
 
 Các phần này giữ đúng phase riêng phía sau.
+
+# 34.5. Phase 4.5 — GTCRN Audio Enhancement Integration & Full-Pipeline Regression
+
+**Status: PLANNED — sau khi Phase 4 ổn định**
+
+Phase 2 đã chứng minh GTCRN chạy được trên Jetson Nano và không phá clean speech trong test ban đầu. Phase này mới đưa enhancement vào production speech path.
+
+### Mục tiêu
+
+```text
+CURRENT:
+Mic / ALSA
+    ↓
+Silero VAD
+    ↓
+speech_queue
+    ↓
+Whisper
+
+TARGET:
+Mic / ALSA
+    ↓
+GTCRN online enhancement
+    ↓
+Silero VAD
+    ↓
+speech_queue
+    ↓
+Whisper
+```
+
+GTCRN chạy trong **C++ speech runtime**, trước Silero VAD. Không đưa enhancement sang Python.
+
+### Giữ nguyên
+
+```text
+Silero VAD
+Whisper Tiny.en
+C++ speech_queue
+STT worker
+Python Phase 4 handlers/queues
+Gemma local LLM
+```
+
+Không refactor thêm architecture trong phase này.
+
+### Benchmark bắt buộc
+
+So sánh:
+
+```text
+GTCRN OFF
+vs
+GTCRN ON
+```
+
+Đo lại:
+
+```text
+VAD latency
+STT latency
+VAD + STT
+Speech → First
+Speech → Last
+CPU usage
+RAM RSS
+system available RAM
+queue depth / backlog
+transcript quality
+noisy-room behavior
+```
+
+### Quality test
+
+```text
+clean speech preservation
+background noise reduction
+Whisper annotation/hallucination
+false VAD activation
+valid speech bị mất hay không
+```
+
+Ưu tiên audio thực tế từ microphone của project.
+
+### Go / No-Go
+
+Chỉ giữ GTCRN trong production khi:
+
+```text
+quality improvement rõ
+AND
+realtime/resource regression chấp nhận được
+AND
+không gây queue backlog bất thường
+```
+
+Nếu FAIL:
+
+```text
+rollback GTCRN integration
+→ production pipeline quay về raw audio → Silero
+```
+
+### Officialize dependency
+
+Chỉ sau khi integration PASS mới cập nhật chính thức:
+
+```text
+deps/models.manifest
+deps/models.sha256
+deps/runtime-sources.md
+download/setup script nếu cần
+```
+
+GTCRN không được coi là dependency production chỉ vì benchmark standalone đã PASS.
 
 # 35. Phase 5 — Conversation Manager + bounded history
 
@@ -2408,6 +2523,11 @@ cancellation
 [ ] Introduce llm_output_queue
 [ ] Introduce ResponseProcessor
 [ ] Add Python queue/worker metrics
+
+[ ] Phase 4.5: Integrate GTCRN before Silero VAD
+[ ] GTCRN ON/OFF full-pipeline regression
+[ ] Noisy real-world GTCRN A/B test
+[ ] Officialize GTCRN dependency only if integration PASS
 
 [ ] Add ConversationManager / bounded chat_size
 [ ] Add Local/Remote LLM backend abstraction

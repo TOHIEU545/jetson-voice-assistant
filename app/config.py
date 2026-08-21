@@ -50,11 +50,20 @@ WHISPER_TOKENS = os.path.join(
     "tiny.en-tokens.txt",
 )
 
+GTCRN_MODEL = os.path.join(
+    PROJECT_ROOT,
+    "models",
+    "enhancement",
+    "gtcrn_simple.onnx",
+)
+
+ENABLE_GTCRN = False
+
 MIC_DEVICE = "plughw:2,0"
 
 
 def build_speech_command():
-    return [
+    command = [
         SHERPA_BIN,
 
         "--silero-vad-model=" + VAD_MODEL,
@@ -73,9 +82,16 @@ def build_speech_command():
 
         "--silero-vad-threshold=0.5",
         "--silero-vad-max-speech-duration=60",
-
-        MIC_DEVICE,
     ]
+
+    if ENABLE_GTCRN:
+        command.append(
+            "--speech-denoiser-gtcrn-model=" + GTCRN_MODEL
+        )
+
+    command.append(MIC_DEVICE)
+
+    return command
 
 
 # ============================================================
