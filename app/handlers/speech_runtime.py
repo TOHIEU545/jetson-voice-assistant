@@ -22,22 +22,35 @@ LATENCY_RE = re.compile(
     r"([0-9.]+)\s*s$"
 )
 
+# Phase 9 runtime contract.
+#
+# Future C++ runtime may emit:
+#
+#     [SPEECH_STARTED]
+#
+# or:
+#
+#     [SPEECH_STARTED] ...
+#
+# Additional metadata after the marker is intentionally ignored
+# by Phase 9A.
+SPEECH_STARTED_RE = re.compile(
+    r"^\[SPEECH_STARTED\](?:\s+.*)?$"
+)
+
 
 class SpeechRuntimeParser(object):
     """
-    Stateful parser for the current sherpa stdout/stderr contract.
+    Stateful parser for sherpa transcript/latency output.
 
-    Expected sequence:
+    Current sequence:
 
         0: What is a microcontroller?
         [LATENCY] VAD   : 0.500 s
         [LATENCY] STT   : 1.650 s
         [LATENCY] TOTAL : 2.150 s
 
-    T2 is captured immediately when the transcript line is received.
-
-    A complete turn is emitted after TOTAL arrives so downstream
-    consumers receive transcript + C++ latency metadata together.
+    T2 is captured immediately when the transcript line arrives.
     """
 
     def __init__(self):
@@ -53,13 +66,18 @@ class SpeechRuntimeParser(object):
         transcript_match = TRANSCRIPT_RE.match(line)
 
         if transcript_match:
-            runtime_index = int(transcript_match.group(1))
-            text = transcript_match.group(2).strip()
+            runtime_index = int(
+                transcript_match.group(1)
+            )
+
+            text = (
+                transcript_match.group(2)
+                .strip()
+            )
 
             if not text:
                 return None
 
-            # T2: final transcript reaches the Python application.
             t2 = time.perf_counter()
 
             self.pending_turn = create_transcript_turn(
@@ -70,7 +88,7 @@ class SpeechRuntimeParser(object):
             )
 
             self.next_turn_id += 1
-            
+
             return None
 
         latency_match = LATENCY_RE.match(line)
@@ -91,9 +109,13 @@ class SpeechRuntimeParser(object):
             self.pending_turn["stt_s"] = value
 
         elif stage == "TOTAL":
-            self.pending_turn["vad_stt_total_s"] = value
+            self.pending_turn[
+                "vad_stt_total_s"
+            ] = value
 
-        if not is_complete_transcript_turn(self.pending_turn):
+        if not is_complete_transcript_turn(
+            self.pending_turn
+        ):
             return None
 
         completed_turn = self.pending_turn
@@ -104,15 +126,15 @@ class SpeechRuntimeParser(object):
 
 class SpeechRuntimeHandler(threading.Thread):
     """
-    Owns the sherpa subprocess and continuously drains its output.
+    Own the C++ speech subprocess and continuously drain output.
 
-    Responsibilities:
-        subprocess lifecycle
-        stdout ingestion
-        transcript/latency parsing
-        transcript_queue.put()
+    Phase 9A additionally consumes the runtime event:
 
-    It must never call the LLM.
+        [SPEECH_STARTED]
+
+    and forwards it to GenerationCancellationController.
+
+    SpeechRuntimeHandler still never calls the LLM directly.
     """
 
     def __init__(
@@ -120,6 +142,7 @@ class SpeechRuntimeHandler(threading.Thread):
         command,
         transcript_queue,
         stop_event,
+        cancellation_controller=None,
         name="SpeechRuntimeHandler",
     ):
         threading.Thread.__init__(self, name=name)
@@ -128,9 +151,41 @@ class SpeechRuntimeHandler(threading.Thread):
         self.transcript_queue = transcript_queue
         self.stop_event = stop_event
 
+        self.cancellation_controller = (
+            cancellation_controller
+        )
+
         self.process = None
         self.parser = SpeechRuntimeParser()
         self.error = None
+
+        self.speech_started_count = 0
+        self.last_interruption = None
+
+    def _handle_runtime_event_line(
+        self,
+        raw_line,
+    ):
+        """
+        Handle realtime events that are not transcript records.
+
+        Returns True when the line was consumed as a runtime event.
+        """
+        line = raw_line.strip()
+
+        if not SPEECH_STARTED_RE.match(line):
+            return False
+
+        self.speech_started_count += 1
+
+        if self.cancellation_controller is not None:
+            self.last_interruption = (
+                self.cancellation_controller.cancel_active(
+                    reason="barge_in"
+                )
+            )
+
+        return True
 
     def run(self):
         try:
@@ -142,26 +197,38 @@ class SpeechRuntimeHandler(threading.Thread):
                 bufsize=1,
             )
 
-            for raw_line in iter(self.process.stdout.readline, ""):
+            for raw_line in iter(
+                self.process.stdout.readline,
+                "",
+            ):
                 if self.stop_event.is_set():
                     break
 
-                turn = self.parser.feed_line(raw_line)
+                # Phase 9 realtime events must be handled before
+                # transcript parsing.
+                if self._handle_runtime_event_line(
+                    raw_line
+                ):
+                    continue
+
+                turn = self.parser.feed_line(
+                    raw_line
+                )
 
                 if turn is None:
                     continue
 
-                turn["transcript_queue_enter"] = time.perf_counter()
+                turn[
+                    "transcript_queue_enter"
+                ] = time.perf_counter()
 
-                # qsize() is approximate under concurrency, but is
-                # sufficient for Phase-4 backlog instrumentation.
-                turn["transcript_queue_depth_at_enqueue"] = (
-                    self.transcript_queue.qsize() + 1
+                turn[
+                    "transcript_queue_depth_at_enqueue"
+                ] = (
+                    self.transcript_queue.qsize()
+                    + 1
                 )
 
-                # Phase 4 currently uses an unbounded queue.
-                # Text/metadata payload is small and this put must not
-                # become the new speech-ingestion bottleneck.
                 self.transcript_queue.put(turn)
 
         except Exception as exc:
@@ -175,11 +242,8 @@ class SpeechRuntimeHandler(threading.Thread):
         """
         Gracefully stop the C++ speech runtime.
 
-        SIGINT preserves the Phase-3 shutdown contract:
-        producer stops, queued speech is drained by the STT worker,
-        and the process exits after worker join.
-
-        SIGTERM is only a fallback if graceful shutdown stalls.
+        SIGINT preserves the Phase-3 worker-drain contract.
+        SIGTERM is only a fallback.
         """
 
         process = self.process
@@ -189,7 +253,10 @@ class SpeechRuntimeHandler(threading.Thread):
 
         if process.poll() is None:
             try:
-                process.send_signal(signal.SIGINT)
+                process.send_signal(
+                    signal.SIGINT
+                )
+
             except Exception:
                 try:
                     process.terminate()

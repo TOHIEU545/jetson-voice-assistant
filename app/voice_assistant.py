@@ -25,6 +25,8 @@ from handlers.speech_runtime import SpeechRuntimeHandler
 from handlers.transcript_gate import TranscriptGateHandler
 from backends.llm import create_llm_backend
 from core.conversation import ConversationManager
+from core.cancellation import GenerationCancellationController
+from core.revisions import RevisionTracker
 
 
 def build_banner(session_paths):
@@ -53,6 +55,9 @@ def main():
     session_paths = create_session_paths()
 
     stop_event = threading.Event()
+
+    revision_tracker = RevisionTracker()
+    cancellation_controller = GenerationCancellationController()
 
     conversation_manager = ConversationManager(
         initial_history=INITIAL_HISTORY,
@@ -95,6 +100,8 @@ def main():
         stop_event=stop_event,
         backend=llm_backend,
         conversation_manager=conversation_manager,
+        revision_tracker=revision_tracker,
+        cancellation_controller=cancellation_controller,
         max_tokens=LLM_MAX_TOKENS,
         temperature=LLM_TEMPERATURE,
     )
@@ -110,6 +117,7 @@ def main():
         command=build_speech_command(),
         transcript_queue=transcript_queue,
         stop_event=stop_event,
+        cancellation_controller=cancellation_controller,
     )
 
     # Start downstream first so every producer already has

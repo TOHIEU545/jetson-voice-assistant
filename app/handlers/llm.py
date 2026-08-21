@@ -7,20 +7,17 @@ import time
 
 class LLMHandler(threading.Thread):
     """
-    Consume valid turns and coordinate streaming LLM generation.
+    Coordinate streaming LLM generation.
 
-    Phase 8A:
-        - turn_id + revision propagation
-        - stale revision detection
-        - cooperative speculative-generation cancellation
+    Cancellation sources:
 
-    Cancellation is cooperative:
-        LLMHandler stops consuming/emitting tokens from a stale
-        revision as soon as it notices that RevisionTracker has
-        observed a newer revision.
+        Phase 8:
+            newer revision
+            -> stale_revision
 
-    Transport-level cancellation can be added later where the
-    concrete backend supports it.
+        Phase 9:
+            speech_started
+            -> barge_in
     """
 
     def __init__(
@@ -31,6 +28,7 @@ class LLMHandler(threading.Thread):
         conversation_manager,
         backend,
         revision_tracker=None,
+        cancellation_controller=None,
         max_tokens=128,
         temperature=0.5,
         name="LLMHandler",
@@ -43,7 +41,11 @@ class LLMHandler(threading.Thread):
 
         self.conversation_manager = conversation_manager
         self.backend = backend
+
         self.revision_tracker = revision_tracker
+        self.cancellation_controller = (
+            cancellation_controller
+        )
 
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -84,10 +86,12 @@ class LLMHandler(threading.Thread):
         except Exception:
             pass
 
-    def _cancel_stale_turn(
+    def _cancel_turn(
         self,
         turn,
         worker_start,
+        reason,
+        cancellation_state=None,
     ):
         turn_id = turn["turn_id"]
         revision = turn.get("revision", 0)
@@ -95,15 +99,14 @@ class LLMHandler(threading.Thread):
         self._abort_turn_safely(
             turn_id=turn_id,
             revision=revision,
-            reason="stale revision",
+            reason=reason,
         )
+
+        observed_at = time.perf_counter()
 
         turn["llm_processing_s"] = (
-            time.perf_counter()
-            - worker_start
+            observed_at - worker_start
         )
-
-        self.cancelled_count += 1
 
         latest_revision = None
 
@@ -114,19 +117,53 @@ class LLMHandler(threading.Thread):
                 )
             )
 
+        cancel_requested_at = None
+        cancel_detection_ms = None
+
+        if cancellation_state is not None:
+            cancel_requested_at = (
+                cancellation_state.get(
+                    "cancel_requested_at"
+                )
+            )
+
+            if cancel_requested_at is not None:
+                cancel_detection_ms = (
+                    observed_at
+                    - cancel_requested_at
+                ) * 1000.0
+
+        turn["cancel_reason"] = reason
+        turn["cancel_requested_at"] = (
+            cancel_requested_at
+        )
+        turn["cancel_observed_at"] = (
+            observed_at
+        )
+        turn["cancel_detection_ms"] = (
+            cancel_detection_ms
+        )
+
+        self.cancelled_count += 1
+
         self._emit({
             "type": "turn_cancelled",
             "turn_id": turn_id,
             "revision": revision,
             "latest_revision": latest_revision,
-            "runtime_index": turn["runtime_index"],
+            "runtime_index":
+                turn["runtime_index"],
             "text": turn.get("text", ""),
-            "reason": "stale_revision",
+            "reason": reason,
+            "cancel_detection_ms":
+                cancel_detection_ms,
             "turn": dict(turn),
         })
 
     def _process_turn(self, turn):
-        turn["valid_turn_queue_leave"] = time.perf_counter()
+        turn[
+            "valid_turn_queue_leave"
+        ] = time.perf_counter()
 
         worker_start = time.perf_counter()
 
@@ -140,138 +177,134 @@ class LLMHandler(threading.Thread):
                 revision=revision,
             )
 
-        # A queued revision may already have become stale
-        # before the LLM worker starts it.
+        # Revision may already be obsolete while waiting in queue.
         if self._is_stale(
             turn_id=turn_id,
             revision=revision,
         ):
-            self._cancel_stale_turn(
+            self._cancel_turn(
                 turn=turn,
                 worker_start=worker_start,
+                reason="stale_revision",
             )
             return
 
-        self._emit({
-            "type": "turn_start",
-            "turn_id": turn_id,
-            "revision": revision,
-            "runtime_index": turn["runtime_index"],
-            "text": text,
-        })
+        scope_id = None
 
-        try:
-            messages = (
-                self.conversation_manager.start_turn(
+        if self.cancellation_controller is not None:
+            scope_id = (
+                self.cancellation_controller
+                .begin_generation(
                     turn_id=turn_id,
                     revision=revision,
-                    text=text,
                 )
             )
 
-            turn["t3"] = time.perf_counter()
-
-            answer_parts = []
-            t4 = None
-            t5 = None
-
-            for token in self.backend.stream_generate(
-                messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-            ):
-                # This check is intentionally inside the streaming
-                # loop. A newer revision can appear while this
-                # generation is already running.
-                if self._is_stale(
-                    turn_id=turn_id,
-                    revision=revision,
-                ):
-                    self._cancel_stale_turn(
-                        turn=turn,
-                        worker_start=worker_start,
-                    )
-                    return
-
-                if not token:
-                    continue
-
-                token_time = time.perf_counter()
-
-                if t4 is None:
-                    t4 = token_time
-
-                t5 = token_time
-                answer_parts.append(token)
-
-                self._emit({
-                    "type": "token",
-                    "turn_id": turn_id,
-                    "revision": revision,
-                    "text": token,
-                })
-
-        except Exception as exc:
-            self._abort_turn_safely(
-                turn_id=turn_id,
-                revision=revision,
-                reason=str(exc),
-            )
-
-            turn["llm_processing_s"] = (
-                time.perf_counter()
-                - worker_start
-            )
-
-            self.failed_count += 1
-
+        try:
             self._emit({
-                "type": "llm_error",
+                "type": "turn_start",
                 "turn_id": turn_id,
                 "revision": revision,
                 "runtime_index":
                     turn["runtime_index"],
                 "text": text,
-                "error": str(exc),
-                "turn": dict(turn),
             })
 
-            return
-
-        # One final stale check before history commit.
-        if self._is_stale(
-            turn_id=turn_id,
-            revision=revision,
-        ):
-            self._cancel_stale_turn(
-                turn=turn,
-                worker_start=worker_start,
-            )
-            return
-
-        answer = "".join(answer_parts).strip()
-
-        turn["t4"] = t4
-        turn["t5"] = t5
-
-        turn["llm_processing_s"] = (
-            time.perf_counter()
-            - worker_start
-        )
-
-        if answer:
             try:
-                self.conversation_manager.commit_turn(
-                    turn_id=turn_id,
-                    revision=revision,
-                    assistant_text=answer,
+                messages = (
+                    self.conversation_manager.start_turn(
+                        turn_id=turn_id,
+                        revision=revision,
+                        text=text,
+                    )
                 )
+
+                turn["t3"] = time.perf_counter()
+
+                answer_parts = []
+                t4 = None
+                t5 = None
+
+                for token in (
+                    self.backend.stream_generate(
+                        messages=messages,
+                        max_tokens=self.max_tokens,
+                        temperature=self.temperature,
+                    )
+                ):
+                    # Phase 8 cancellation.
+                    if self._is_stale(
+                        turn_id=turn_id,
+                        revision=revision,
+                    ):
+                        self._cancel_turn(
+                            turn=turn,
+                            worker_start=worker_start,
+                            reason="stale_revision",
+                        )
+                        return
+
+                    # Phase 9 cancellation.
+                    if (
+                        scope_id is not None
+                        and self.cancellation_controller
+                        .is_cancelled(scope_id)
+                    ):
+                        cancel_state = (
+                            self.cancellation_controller
+                            .scope_snapshot(scope_id)
+                        )
+
+                        reason = "barge_in"
+
+                        if cancel_state is not None:
+                            reason = (
+                                cancel_state.get(
+                                    "reason"
+                                )
+                                or reason
+                            )
+
+                        self._cancel_turn(
+                            turn=turn,
+                            worker_start=worker_start,
+                            reason=reason,
+                            cancellation_state=
+                                cancel_state,
+                        )
+                        return
+
+                    if not token:
+                        continue
+
+                    token_time = time.perf_counter()
+
+                    if t4 is None:
+                        t4 = token_time
+                        turn["t4"] = t4
+
+                    t5 = token_time
+                    turn["t5"] = t5
+
+                    answer_parts.append(token)
+
+                    self._emit({
+                        "type": "token",
+                        "turn_id": turn_id,
+                        "revision": revision,
+                        "text": token,
+                    })
 
             except Exception as exc:
                 self._abort_turn_safely(
                     turn_id=turn_id,
                     revision=revision,
                     reason=str(exc),
+                )
+
+                turn["llm_processing_s"] = (
+                    time.perf_counter()
+                    - worker_start
                 )
 
                 self.failed_count += 1
@@ -289,24 +322,116 @@ class LLMHandler(threading.Thread):
 
                 return
 
-        else:
-            self._abort_turn_safely(
+            # Final revision check before history commit.
+            if self._is_stale(
                 turn_id=turn_id,
                 revision=revision,
-                reason="empty assistant response",
+            ):
+                self._cancel_turn(
+                    turn=turn,
+                    worker_start=worker_start,
+                    reason="stale_revision",
+                )
+                return
+
+            # Final barge-in check before history commit.
+            if (
+                scope_id is not None
+                and self.cancellation_controller
+                .is_cancelled(scope_id)
+            ):
+                cancel_state = (
+                    self.cancellation_controller
+                    .scope_snapshot(scope_id)
+                )
+
+                reason = "barge_in"
+
+                if cancel_state is not None:
+                    reason = (
+                        cancel_state.get("reason")
+                        or reason
+                    )
+
+                self._cancel_turn(
+                    turn=turn,
+                    worker_start=worker_start,
+                    reason=reason,
+                    cancellation_state=cancel_state,
+                )
+                return
+
+            answer = "".join(
+                answer_parts
+            ).strip()
+
+            turn["t4"] = t4
+            turn["t5"] = t5
+
+            turn["llm_processing_s"] = (
+                time.perf_counter()
+                - worker_start
             )
 
-        self.completed_count += 1
+            if answer:
+                try:
+                    self.conversation_manager.commit_turn(
+                        turn_id=turn_id,
+                        revision=revision,
+                        assistant_text=answer,
+                    )
 
-        self._emit({
-            "type": "turn_done",
-            "turn_id": turn_id,
-            "revision": revision,
-            "runtime_index": turn["runtime_index"],
-            "text": text,
-            "answer": answer,
-            "turn": dict(turn),
-        })
+                except Exception as exc:
+                    self._abort_turn_safely(
+                        turn_id=turn_id,
+                        revision=revision,
+                        reason=str(exc),
+                    )
+
+                    self.failed_count += 1
+
+                    self._emit({
+                        "type": "llm_error",
+                        "turn_id": turn_id,
+                        "revision": revision,
+                        "runtime_index":
+                            turn["runtime_index"],
+                        "text": text,
+                        "error": str(exc),
+                        "turn": dict(turn),
+                    })
+
+                    return
+
+            else:
+                self._abort_turn_safely(
+                    turn_id=turn_id,
+                    revision=revision,
+                    reason="empty assistant response",
+                )
+
+            self.completed_count += 1
+
+            self._emit({
+                "type": "turn_done",
+                "turn_id": turn_id,
+                "revision": revision,
+                "runtime_index":
+                    turn["runtime_index"],
+                "text": text,
+                "answer": answer,
+                "turn": dict(turn),
+            })
+
+        finally:
+            if (
+                scope_id is not None
+                and self.cancellation_controller
+                is not None
+            ):
+                self.cancellation_controller.finish_generation(
+                    scope_id
+                )
 
     def run(self):
         try:
