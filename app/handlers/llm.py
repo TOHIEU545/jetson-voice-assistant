@@ -9,10 +9,18 @@ class LLMHandler(threading.Thread):
     """
     Consume valid turns and coordinate streaming LLM generation.
 
-    Phase 7:
-        turn_id + revision are propagated through every LLM event.
+    Phase 8A:
+        - turn_id + revision propagation
+        - stale revision detection
+        - cooperative speculative-generation cancellation
 
-    HTTP/API transport remains owned by LLMBackend.
+    Cancellation is cooperative:
+        LLMHandler stops consuming/emitting tokens from a stale
+        revision as soon as it notices that RevisionTracker has
+        observed a newer revision.
+
+    Transport-level cancellation can be added later where the
+    concrete backend supports it.
     """
 
     def __init__(
@@ -22,6 +30,7 @@ class LLMHandler(threading.Thread):
         stop_event,
         conversation_manager,
         backend,
+        revision_tracker=None,
         max_tokens=128,
         temperature=0.5,
         name="LLMHandler",
@@ -34,6 +43,7 @@ class LLMHandler(threading.Thread):
 
         self.conversation_manager = conversation_manager
         self.backend = backend
+        self.revision_tracker = revision_tracker
 
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -41,9 +51,23 @@ class LLMHandler(threading.Thread):
         self.error = None
         self.completed_count = 0
         self.failed_count = 0
+        self.cancelled_count = 0
 
     def _emit(self, event):
         self.llm_output_queue.put(event)
+
+    def _is_stale(
+        self,
+        turn_id,
+        revision,
+    ):
+        if self.revision_tracker is None:
+            return False
+
+        return self.revision_tracker.is_stale(
+            turn_id=turn_id,
+            revision=revision,
+        )
 
     def _abort_turn_safely(
         self,
@@ -60,6 +84,47 @@ class LLMHandler(threading.Thread):
         except Exception:
             pass
 
+    def _cancel_stale_turn(
+        self,
+        turn,
+        worker_start,
+    ):
+        turn_id = turn["turn_id"]
+        revision = turn.get("revision", 0)
+
+        self._abort_turn_safely(
+            turn_id=turn_id,
+            revision=revision,
+            reason="stale revision",
+        )
+
+        turn["llm_processing_s"] = (
+            time.perf_counter()
+            - worker_start
+        )
+
+        self.cancelled_count += 1
+
+        latest_revision = None
+
+        if self.revision_tracker is not None:
+            latest_revision = (
+                self.revision_tracker.latest_revision(
+                    turn_id
+                )
+            )
+
+        self._emit({
+            "type": "turn_cancelled",
+            "turn_id": turn_id,
+            "revision": revision,
+            "latest_revision": latest_revision,
+            "runtime_index": turn["runtime_index"],
+            "text": turn.get("text", ""),
+            "reason": "stale_revision",
+            "turn": dict(turn),
+        })
+
     def _process_turn(self, turn):
         turn["valid_turn_queue_leave"] = time.perf_counter()
 
@@ -68,6 +133,24 @@ class LLMHandler(threading.Thread):
         turn_id = turn["turn_id"]
         revision = turn.get("revision", 0)
         text = turn.get("text", "").strip()
+
+        if self.revision_tracker is not None:
+            self.revision_tracker.observe(
+                turn_id=turn_id,
+                revision=revision,
+            )
+
+        # A queued revision may already have become stale
+        # before the LLM worker starts it.
+        if self._is_stale(
+            turn_id=turn_id,
+            revision=revision,
+        ):
+            self._cancel_stale_turn(
+                turn=turn,
+                worker_start=worker_start,
+            )
+            return
 
         self._emit({
             "type": "turn_start",
@@ -97,6 +180,19 @@ class LLMHandler(threading.Thread):
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
             ):
+                # This check is intentionally inside the streaming
+                # loop. A newer revision can appear while this
+                # generation is already running.
+                if self._is_stale(
+                    turn_id=turn_id,
+                    revision=revision,
+                ):
+                    self._cancel_stale_turn(
+                        turn=turn,
+                        worker_start=worker_start,
+                    )
+                    return
+
                 if not token:
                     continue
 
@@ -140,6 +236,17 @@ class LLMHandler(threading.Thread):
                 "turn": dict(turn),
             })
 
+            return
+
+        # One final stale check before history commit.
+        if self._is_stale(
+            turn_id=turn_id,
+            revision=revision,
+        ):
+            self._cancel_stale_turn(
+                turn=turn,
+                worker_start=worker_start,
+            )
             return
 
         answer = "".join(answer_parts).strip()
