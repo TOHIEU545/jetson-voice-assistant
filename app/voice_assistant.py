@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import queue
+import signal
 import threading
 
 from config import (
@@ -116,10 +117,16 @@ def main():
                 break
 
     except KeyboardInterrupt:
-        # Normal Phase-4 shutdown:
-        # stop new speech first, then drain every Python queue
-        # from upstream to downstream.
+        # First Ctrl+C requests graceful shutdown.
+        #
+        # Ignore additional Ctrl+C while queues are draining so a
+        # second SIGINT cannot interrupt Queue.join().
         graceful_shutdown = True
+
+        signal.signal(
+            signal.SIGINT,
+            signal.SIG_IGN,
+        )
 
     finally:
         # ----------------------------------------------------
