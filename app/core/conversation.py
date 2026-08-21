@@ -6,17 +6,12 @@ import time
 
 class ConversationManager(object):
     """
-    Own conversation state independently from the LLM transport.
+    Own committed conversation history and current turn state.
 
-    Responsibilities:
-        - preserve initial/system messages
-        - keep bounded completed user/assistant turns
-        - track current turn
-        - track assistant state
-        - expose timestamps/state for later realtime phases
+    Phase 7 adds revision-aware active-turn validation.
 
-    A turn is added to history only after a successful assistant
-    response. Failed/aborted turns never pollute conversation history.
+    Conversation history is committed only after a successful
+    assistant response.
     """
 
     def __init__(
@@ -31,18 +26,11 @@ class ConversationManager(object):
 
         self.max_turns = max_turns
 
-        # Initial messages are persistent.
-        # In production this currently contains the system prompt.
         self._initial_history = [
             dict(message)
             for message in initial_history
         ]
 
-        # Completed conversational turns only.
-        #
-        # Each entry owns one complete:
-        #     user -> assistant
-        # pair so trimming never leaves an orphan message.
         self._turns = []
 
         self.current_turn = None
@@ -57,9 +45,6 @@ class ConversationManager(object):
             "last_turn_aborted_at": None,
         }
 
-        # Phase 5 currently has one LLM worker, but keeping state
-        # protected makes the manager safe for later cancellation
-        # and realtime coordination phases.
         self._lock = threading.RLock()
 
     def _history_locked(self):
@@ -80,11 +65,6 @@ class ConversationManager(object):
 
     @property
     def history(self):
-        """
-        Return a copy of committed conversation history.
-
-        The caller cannot mutate internal state through this list.
-        """
         with self._lock:
             return self._history_locked()
 
@@ -93,18 +73,22 @@ class ConversationManager(object):
         with self._lock:
             return len(self._turns)
 
-    def start_turn(self, turn_id, text):
-        """
-        Start one LLM turn and return request messages.
-
-        The current user message is included in the returned request,
-        but is NOT committed to history yet.
-        """
+    def start_turn(
+        self,
+        turn_id,
+        text,
+        revision=0,
+    ):
         text = text.strip()
 
         if not text:
             raise ValueError(
                 "conversation turn text must not be empty"
+            )
+
+        if revision < 0:
+            raise ValueError(
+                "revision must be >= 0"
             )
 
         with self._lock:
@@ -117,6 +101,7 @@ class ConversationManager(object):
 
             self.current_turn = {
                 "turn_id": turn_id,
+                "revision": revision,
                 "text": text,
                 "started_at": now,
             }
@@ -140,13 +125,8 @@ class ConversationManager(object):
         self,
         turn_id,
         assistant_text,
+        revision=None,
     ):
-        """
-        Commit the complete user/assistant pair.
-
-        Old turns are removed as complete pairs when max_turns
-        is exceeded.
-        """
         assistant_text = assistant_text.strip()
 
         if not assistant_text:
@@ -155,14 +135,21 @@ class ConversationManager(object):
             )
 
         with self._lock:
-            self._require_active_turn(turn_id)
+            self._require_active_turn(
+                turn_id=turn_id,
+                revision=revision,
+            )
 
             now = time.time()
 
             user_text = self.current_turn["text"]
+            active_revision = (
+                self.current_turn["revision"]
+            )
 
             self._turns.append({
                 "turn_id": turn_id,
+                "revision": active_revision,
                 "user": {
                     "role": "user",
                     "content": user_text,
@@ -174,14 +161,13 @@ class ConversationManager(object):
                 "committed_at": now,
             })
 
-            if len(self._turns) > self.max_turns:
+            if self.max_turns == 0:
+                self._turns = []
+
+            elif len(self._turns) > self.max_turns:
                 self._turns = self._turns[
                     -self.max_turns:
                 ]
-
-            # Special case: bounded history disabled.
-            if self.max_turns == 0:
-                self._turns = []
 
             self.current_turn = None
             self.assistant_state = "idle"
@@ -194,12 +180,13 @@ class ConversationManager(object):
         self,
         turn_id,
         reason=None,
+        revision=None,
     ):
-        """
-        End an active turn without modifying committed history.
-        """
         with self._lock:
-            self._require_active_turn(turn_id)
+            self._require_active_turn(
+                turn_id=turn_id,
+                revision=revision,
+            )
 
             now = time.time()
 
@@ -210,7 +197,11 @@ class ConversationManager(object):
                 "last_turn_aborted_at"
             ] = now
 
-    def _require_active_turn(self, turn_id):
+    def _require_active_turn(
+        self,
+        turn_id,
+        revision=None,
+    ):
         if self.current_turn is None:
             raise RuntimeError(
                 "no active conversation turn"
@@ -221,10 +212,16 @@ class ConversationManager(object):
                 "active turn_id does not match"
             )
 
+        if (
+            revision is not None
+            and self.current_turn["revision"]
+            != revision
+        ):
+            raise RuntimeError(
+                "active revision does not match"
+            )
+
     def snapshot(self):
-        """
-        Return a read-only-style copy useful for tests/debugging.
-        """
         with self._lock:
             current_turn = None
 

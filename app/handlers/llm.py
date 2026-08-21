@@ -7,29 +7,12 @@ import time
 
 class LLMHandler(threading.Thread):
     """
-    Consume valid transcript turns and coordinate LLM generation.
+    Consume valid turns and coordinate streaming LLM generation.
 
-        valid_turn_queue
-                |
-                v
-        ConversationManager
-                |
-                v
-            LLMHandler
-                |
-                v
-            LLMBackend
-                |
-                v
-         llm_output_queue
+    Phase 7:
+        turn_id + revision are propagated through every LLM event.
 
-    Phase 6 responsibilities:
-        - obtain context from ConversationManager
-        - invoke an injected LLMBackend
-        - timestamp T3/T4/T5
-        - emit streaming response events
-
-    HTTP/API transport belongs entirely to LLMBackend.
+    HTTP/API transport remains owned by LLMBackend.
     """
 
     def __init__(
@@ -65,11 +48,13 @@ class LLMHandler(threading.Thread):
     def _abort_turn_safely(
         self,
         turn_id,
+        revision,
         reason,
     ):
         try:
             self.conversation_manager.abort_turn(
                 turn_id=turn_id,
+                revision=revision,
                 reason=reason,
             )
         except Exception:
@@ -81,25 +66,26 @@ class LLMHandler(threading.Thread):
         worker_start = time.perf_counter()
 
         turn_id = turn["turn_id"]
+        revision = turn.get("revision", 0)
         text = turn.get("text", "").strip()
 
         self._emit({
             "type": "turn_start",
             "turn_id": turn_id,
+            "revision": revision,
             "runtime_index": turn["runtime_index"],
             "text": text,
         })
 
         try:
-            messages = self.conversation_manager.start_turn(
-                turn_id=turn_id,
-                text=text,
+            messages = (
+                self.conversation_manager.start_turn(
+                    turn_id=turn_id,
+                    revision=revision,
+                    text=text,
+                )
             )
 
-            # T3: application starts LLM generation.
-            #
-            # From Phase 6 onward this timestamp is independent
-            # of whether the backend is local or remote.
             turn["t3"] = time.perf_counter()
 
             answer_parts = []
@@ -120,18 +106,19 @@ class LLMHandler(threading.Thread):
                     t4 = token_time
 
                 t5 = token_time
-
                 answer_parts.append(token)
 
                 self._emit({
                     "type": "token",
                     "turn_id": turn_id,
+                    "revision": revision,
                     "text": token,
                 })
 
         except Exception as exc:
             self._abort_turn_safely(
                 turn_id=turn_id,
+                revision=revision,
                 reason=str(exc),
             )
 
@@ -145,7 +132,9 @@ class LLMHandler(threading.Thread):
             self._emit({
                 "type": "llm_error",
                 "turn_id": turn_id,
-                "runtime_index": turn["runtime_index"],
+                "revision": revision,
+                "runtime_index":
+                    turn["runtime_index"],
                 "text": text,
                 "error": str(exc),
                 "turn": dict(turn),
@@ -167,12 +156,14 @@ class LLMHandler(threading.Thread):
             try:
                 self.conversation_manager.commit_turn(
                     turn_id=turn_id,
+                    revision=revision,
                     assistant_text=answer,
                 )
 
             except Exception as exc:
                 self._abort_turn_safely(
                     turn_id=turn_id,
+                    revision=revision,
                     reason=str(exc),
                 )
 
@@ -181,6 +172,7 @@ class LLMHandler(threading.Thread):
                 self._emit({
                     "type": "llm_error",
                     "turn_id": turn_id,
+                    "revision": revision,
                     "runtime_index":
                         turn["runtime_index"],
                     "text": text,
@@ -193,6 +185,7 @@ class LLMHandler(threading.Thread):
         else:
             self._abort_turn_safely(
                 turn_id=turn_id,
+                revision=revision,
                 reason="empty assistant response",
             )
 
@@ -201,6 +194,7 @@ class LLMHandler(threading.Thread):
         self._emit({
             "type": "turn_done",
             "turn_id": turn_id,
+            "revision": revision,
             "runtime_index": turn["runtime_index"],
             "text": text,
             "answer": answer,
