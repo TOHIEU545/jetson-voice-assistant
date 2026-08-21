@@ -24,6 +24,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 
+from backends.llm import LocalLlamaCppBackend
 from core.conversation import ConversationManager
 from handlers.llm import LLMHandler
 from handlers.response import ResponseProcessor
@@ -130,16 +131,20 @@ def main():
             max_turns=6,
         )
 
+        backend = LocalLlamaCppBackend(
+            base_url=(
+                "http://127.0.0.1:8080/"
+                "v1/chat/completions"
+            ),
+            urlopen_func=fake_urlopen,
+        )
+
         llm = LLMHandler(
             valid_turn_queue=valid_turn_queue,
             llm_output_queue=output_queue,
             stop_event=stop_event,
-            llm_url=(
-                "http://127.0.0.1:8080/"
-                "v1/chat/completions"
-            ),
+            backend=backend,
             conversation_manager=conversation_manager,
-            urlopen_func=fake_urlopen,
         )
 
         gate = TranscriptGateHandler(

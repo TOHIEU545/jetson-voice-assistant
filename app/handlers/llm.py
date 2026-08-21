@@ -1,34 +1,35 @@
 #!/usr/bin/env python3
 
-import json
 import queue
 import threading
 import time
-import urllib.request
 
 
 class LLMHandler(threading.Thread):
     """
-    Consume valid transcript turns and run the streaming LLM request.
+    Consume valid transcript turns and coordinate LLM generation.
 
         valid_turn_queue
+                |
+                v
+        ConversationManager
                 |
                 v
             LLMHandler
                 |
                 v
+            LLMBackend
+                |
+                v
          llm_output_queue
 
-    Phase 5 responsibilities:
-        - obtain conversation context from ConversationManager
-        - perform HTTP request
-        - parse streaming tokens
+    Phase 6 responsibilities:
+        - obtain context from ConversationManager
+        - invoke an injected LLMBackend
         - timestamp T3/T4/T5
-        - emit response events
+        - emit streaming response events
 
-    Conversation history ownership belongs to ConversationManager.
-
-    LLMBackend abstraction belongs to Phase 6.
+    HTTP/API transport belongs entirely to LLMBackend.
     """
 
     def __init__(
@@ -36,11 +37,10 @@ class LLMHandler(threading.Thread):
         valid_turn_queue,
         llm_output_queue,
         stop_event,
-        llm_url,
         conversation_manager,
+        backend,
         max_tokens=128,
         temperature=0.5,
-        urlopen_func=None,
         name="LLMHandler",
     ):
         threading.Thread.__init__(self, name=name)
@@ -49,16 +49,11 @@ class LLMHandler(threading.Thread):
         self.llm_output_queue = llm_output_queue
         self.stop_event = stop_event
 
-        self.llm_url = llm_url
+        self.conversation_manager = conversation_manager
+        self.backend = backend
+
         self.max_tokens = max_tokens
         self.temperature = temperature
-
-        self.conversation_manager = conversation_manager
-
-        if urlopen_func is None:
-            self.urlopen_func = urllib.request.urlopen
-        else:
-            self.urlopen_func = urlopen_func
 
         self.error = None
         self.completed_count = 0
@@ -96,97 +91,43 @@ class LLMHandler(threading.Thread):
         })
 
         try:
-            messages = (
-                self.conversation_manager.start_turn(
-                    turn_id=turn_id,
-                    text=text,
-                )
+            messages = self.conversation_manager.start_turn(
+                turn_id=turn_id,
+                text=text,
             )
 
-            body = {
-                "messages": messages,
-                "max_tokens": self.max_tokens,
-                "temperature": self.temperature,
-                "stream": True,
-            }
-
-            request = urllib.request.Request(
-                self.llm_url,
-                data=json.dumps(body).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                },
-            )
-
-            # T3: client starts the LLM request.
+            # T3: application starts LLM generation.
+            #
+            # From Phase 6 onward this timestamp is independent
+            # of whether the backend is local or remote.
             turn["t3"] = time.perf_counter()
 
             answer_parts = []
             t4 = None
             t5 = None
 
-            with self.urlopen_func(request) as response:
+            for token in self.backend.stream_generate(
+                messages=messages,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+            ):
+                if not token:
+                    continue
 
-                for raw_line in response:
-                    line = raw_line.decode(
-                        "utf-8"
-                    ).strip()
+                token_time = time.perf_counter()
 
-                    if not line.startswith("data:"):
-                        continue
+                if t4 is None:
+                    t4 = token_time
 
-                    data = line[5:].strip()
+                t5 = token_time
 
-                    if data == "[DONE]":
-                        break
+                answer_parts.append(token)
 
-                    if not data:
-                        continue
-
-                    try:
-                        chunk = json.loads(data)
-                    except ValueError:
-                        continue
-
-                    choices = chunk.get("choices", [])
-
-                    if not choices:
-                        continue
-
-                    choice = choices[0]
-                    token = ""
-
-                    delta = choice.get("delta", {})
-
-                    if isinstance(delta, dict):
-                        token = (
-                            delta.get("content")
-                            or ""
-                        )
-
-                    if not token:
-                        token = (
-                            choice.get("text")
-                            or ""
-                        )
-
-                    if not token:
-                        continue
-
-                    token_time = time.perf_counter()
-
-                    if t4 is None:
-                        t4 = token_time
-
-                    t5 = token_time
-
-                    answer_parts.append(token)
-
-                    self._emit({
-                        "type": "token",
-                        "turn_id": turn_id,
-                        "text": token,
-                    })
+                self._emit({
+                    "type": "token",
+                    "turn_id": turn_id,
+                    "text": token,
+                })
 
         except Exception as exc:
             self._abort_turn_safely(
@@ -216,6 +157,7 @@ class LLMHandler(threading.Thread):
 
         turn["t4"] = t4
         turn["t5"] = t5
+
         turn["llm_processing_s"] = (
             time.perf_counter()
             - worker_start

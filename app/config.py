@@ -109,8 +109,28 @@ def build_speech_command():
 # LLM
 # ============================================================
 
-LLM_URL = "http://127.0.0.1:8080/v1/chat/completions"
+LLM_MODE = os.environ.get(
+    "LLM_MODE",
+    "local",
+).strip().lower()
 
+LLM_BASE_URL = os.environ.get(
+    "LLM_BASE_URL",
+    "http://127.0.0.1:8080/v1/chat/completions",
+).strip()
+
+LLM_MODEL = os.environ.get(
+    "LLM_MODEL",
+    "",
+).strip() or None
+
+LLM_API_KEY = os.environ.get(
+    "LLM_API_KEY",
+    "",
+).strip() or None
+
+# Backward-compatible alias for older benchmark tools.
+LLM_URL = LLM_BASE_URL
 LLM_MAX_TOKENS = 128
 LLM_TEMPERATURE = 0.5
 MAX_CONVERSATION_TURNS = 6

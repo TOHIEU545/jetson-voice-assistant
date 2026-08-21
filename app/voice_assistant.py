@@ -6,6 +6,10 @@ import threading
 
 from config import (
     INITIAL_HISTORY,
+    LLM_MODE,
+    LLM_BASE_URL,
+    LLM_MODEL,
+    LLM_API_KEY,
     LLM_MAX_TOKENS,
     LLM_TEMPERATURE,
     LLM_URL,
@@ -19,6 +23,7 @@ from handlers.llm import LLMHandler
 from handlers.response import ResponseProcessor
 from handlers.speech_runtime import SpeechRuntimeHandler
 from handlers.transcript_gate import TranscriptGateHandler
+from backends.llm import create_llm_backend
 from core.conversation import ConversationManager
 
 
@@ -77,11 +82,18 @@ def main():
         session_start=session_paths["session_start"],
     )
 
+    llm_backend = create_llm_backend(
+        mode=LLM_MODE,
+        base_url=LLM_BASE_URL,
+        model=LLM_MODEL,
+        api_key=LLM_API_KEY,
+    )
+
     llm_handler = LLMHandler(
         valid_turn_queue=valid_turn_queue,
         llm_output_queue=llm_output_queue,
         stop_event=stop_event,
-        llm_url=LLM_URL,
+        backend=llm_backend,
         conversation_manager=conversation_manager,
         max_tokens=LLM_MAX_TOKENS,
         temperature=LLM_TEMPERATURE,
