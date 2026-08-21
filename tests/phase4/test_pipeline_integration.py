@@ -24,6 +24,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 
+from core.conversation import ConversationManager
 from handlers.llm import LLMHandler
 from handlers.response import ResponseProcessor
 from handlers.transcript_gate import TranscriptGateHandler
@@ -119,6 +120,16 @@ def main():
             output_stream=console,
         )
 
+        conversation_manager = ConversationManager(
+            initial_history=[
+                {
+                    "role": "system",
+                    "content": "Test system prompt.",
+                }
+            ],
+            max_turns=6,
+        )
+
         llm = LLMHandler(
             valid_turn_queue=valid_turn_queue,
             llm_output_queue=output_queue,
@@ -127,12 +138,7 @@ def main():
                 "http://127.0.0.1:8080/"
                 "v1/chat/completions"
             ),
-            initial_history=[
-                {
-                    "role": "system",
-                    "content": "Test system prompt.",
-                }
-            ],
+            conversation_manager=conversation_manager,
             urlopen_func=fake_urlopen,
         )
 

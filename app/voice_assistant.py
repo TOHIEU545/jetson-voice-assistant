@@ -9,6 +9,7 @@ from config import (
     LLM_MAX_TOKENS,
     LLM_TEMPERATURE,
     LLM_URL,
+    MAX_CONVERSATION_TURNS,
     PROJECT_ROOT,
     build_speech_command,
     create_session_paths,
@@ -18,6 +19,7 @@ from handlers.llm import LLMHandler
 from handlers.response import ResponseProcessor
 from handlers.speech_runtime import SpeechRuntimeHandler
 from handlers.transcript_gate import TranscriptGateHandler
+from core.conversation import ConversationManager
 
 
 def build_banner(session_paths):
@@ -47,6 +49,11 @@ def main():
 
     stop_event = threading.Event()
 
+    conversation_manager = ConversationManager(
+        initial_history=INITIAL_HISTORY,
+        max_turns=MAX_CONVERSATION_TURNS,
+    )
+
     # Phase 4 queues.
     #
     # C++ speech_queue already exists inside the sherpa runtime.
@@ -75,7 +82,7 @@ def main():
         llm_output_queue=llm_output_queue,
         stop_event=stop_event,
         llm_url=LLM_URL,
-        initial_history=INITIAL_HISTORY,
+        conversation_manager=conversation_manager,
         max_tokens=LLM_MAX_TOKENS,
         temperature=LLM_TEMPERATURE,
     )

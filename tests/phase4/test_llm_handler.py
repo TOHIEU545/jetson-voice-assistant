@@ -22,6 +22,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 
+from core.conversation import ConversationManager
 from handlers.llm import LLMHandler
 
 
@@ -105,6 +106,11 @@ def main():
         }
     ]
 
+    conversation_manager = ConversationManager(
+        initial_history=initial_history,
+        max_turns=6,
+    )
+
     handler = LLMHandler(
         valid_turn_queue=valid_turn_queue,
         llm_output_queue=llm_output_queue,
@@ -113,7 +119,7 @@ def main():
             "http://127.0.0.1:8080/"
             "v1/chat/completions"
         ),
-        initial_history=initial_history,
+        conversation_manager=conversation_manager,
         urlopen_func=fake_urlopen,
     )
 
@@ -204,16 +210,23 @@ def main():
         is not None
     )
 
-    # History should now be:
-    # system -> user -> assistant
-    assert len(handler.history) == 3
+    # ConversationManager now owns history.
+    assert len(conversation_manager.history) == 3
 
-    assert handler.history[-1] == {
+    assert conversation_manager.history[-1] == {
         "role": "assistant",
         "content": "UART is a serial interface.",
     }
 
-    print("PASS: LLMHandler")
+    assert conversation_manager.turn_count == 1
+    assert conversation_manager.current_turn is None
+
+    assert (
+        conversation_manager.assistant_state
+        == "idle"
+    )
+
+    print("PASS: LLMHandler + ConversationManager")
     print("valid_turn_queue -> streaming LLM")
     print("events:", event_types)
     print("answer:", done["answer"])
@@ -221,7 +234,7 @@ def main():
         "history roles:",
         [
             message["role"]
-            for message in handler.history
+            for message in conversation_manager.history
         ],
     )
 
