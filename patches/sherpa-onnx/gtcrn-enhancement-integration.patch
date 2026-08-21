@@ -18,7 +18,7 @@
  
    vad_config.Register(&po);
    asr_config.Register(&po);
-+  denoiser_config.Register(&po);
++  denoiser_config.model.gtcrn.Register(&po);
  
    po.Read(argc, argv);
    if (po.NumArgs() != 1) {
