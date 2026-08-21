@@ -1,5 +1,15 @@
 # Jetson Voice Assistant — Kiến trúc hiện tại và Roadmap tối ưu theo `huggingface/speech-to-speech`
 
+> **Roadmap revision — 2026-08-21**
+>
+> Bản cập nhật này phản ánh implementation thực tế sau Phase 2/3:
+>
+> - Audio enhancement: DPDFNet2 không tương thích ONNX opset hiện tại; GTCRN chạy được và đã có benchmark ban đầu, nhưng chưa integrate.
+> - Phase 3: `ALSA/Silero VAD producer → speech_queue → resident Whisper STT worker` đã được hiện thực trong C++.
+> - Phase 4 được tinh chỉnh: Python không tạo lại Audio/VAD/STT worker; pipeline Python bắt đầu từ `SpeechRuntimeHandler → transcript_queue`.
+> - ConversationManager, LLMBackend abstraction, Smart Turn, cancellation/barge-in vẫn giữ nguyên ở các phase sau.
+>
+
 > **Mục tiêu tài liệu**
 >
 > Tài liệu này tổng hợp trạng thái thực tế của project trong `source.tar.gz`, giải thích kiến trúc/model/runtime hiện tại, sau đó đề xuất kiến trúc mới và roadmap phát triển **bám sát cách tổ chức của repo `huggingface/speech-to-speech`**.
@@ -48,32 +58,38 @@ Mỗi stage là một component riêng, được nối bằng `Queue`, có state
 
 ### Hướng của project Jetson
 
-Ta sẽ giữ triết lý đó nhưng dùng các component nhẹ hơn:
+Ta sẽ giữ triết lý đó nhưng ánh xạ theo implementation thực tế của project:
 
 ```text
                       Jetson Nano
-┌────────────────────────────────────────────────────────────┐
-│                                                            │
-│  Mic                                                       │
-│   ↓                                                        │
-│  [Audio Enhancement]                                       │
-│   ↓                                                        │
-│  Silero VAD Worker                                         │
-│   ↓ speech_queue                                           │
-│  [Smart Turn / Turn Controller]                            │
-│   ↓                                                        │
-│  Whisper Tiny.en STT Worker                                │
-│   ↓ transcript_queue                                       │
-│  Transcript Gate                                           │
-│   ↓ valid_turn_queue                                       │
-│  LLM Backend                                               │
-│   ├── Local: Gemma 3 1B Q4 + llama.cpp                     │
-│   └── Remote: OpenAI-compatible API trên GPU server        │
-│                                                            │
-│  [TTS slot — để sau, chưa cần ở phiên bản hiện tại]        │
-│                                                            │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                                                              │
+│  C++ speech runtime                                          │
+│  Mic / ALSA                                                  │
+│      ↓                                                       │
+│  [Audio Enhancement — optional, chưa integrate]              │
+│      ↓                                                       │
+│  Silero VAD producer                                         │
+│      ↓ speech_queue                                          │
+│  Whisper Tiny.en STT worker                                  │
+│      ↓ transcript + latency                                  │
+│                                                              │
+│  Python application                                          │
+│  SpeechRuntimeHandler                                        │
+│      ↓ transcript_queue                                      │
+│  TranscriptGateHandler                                       │
+│      ↓ valid_turn_queue                                      │
+│  LLMHandler                                                  │
+│      ↓ llm_output_queue                                      │
+│  ResponseProcessor                                           │
+│                                                              │
+│  [ConversationManager / LLMBackend abstraction / Smart Turn  │
+│   / cancellation / TTS được thêm ở các phase sau]            │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
 ```
+
+> Sau Phase 3, `speech_queue` và STT worker đã nằm trong C++ runtime. Vì vậy Phase 4 **không tạo lại Audio/VAD Handler hoặc STT Handler bằng Python**; Python pipeline bắt đầu từ transcript output của C++ runtime.
 
 ### Những thứ **không nằm trong scope hiện tại**
 
@@ -153,7 +169,8 @@ jetson-voice-assistant-source/
 │
 ├── patches/
 │   └── sherpa-onnx/
-│       └── latency-instrumentation.patch
+│       ├── latency-instrumentation.patch
+│       └── vad-stt-decoupling.patch
 │
 └── docs/
     ├── project_tree.txt
@@ -214,7 +231,7 @@ runtime/sherpa-onnx/build/bin/
 
 Điểm cần hiểu:
 
-> Hiện tại **VAD và STT chưa phải hai worker độc lập**. Chúng đang nằm chung trong một C++ executable.
+> Sau Phase 3, VAD và STT vẫn nằm trong **cùng một C++ executable**, nhưng đã được tách execution thành producer–consumer: Audio/VAD producer tiếp tục capture, còn Whisper chạy trong một STT worker riêng nối qua `speech_queue`. Đây là decoupling thật sự mà không cần tách thành hai process.
 
 ---
 
@@ -543,9 +560,9 @@ Việc LLM generate dài có thể kéo `Speech → Last` lên cao, nhưng do st
 
 # 10. Điểm yếu kiến trúc hiện tại
 
-## 10.1 VAD và STT bị gắn chung
+## 10.1 VAD và STT — bottleneck cũ đã được xử lý ở Phase 3
 
-Trong source C++ instrumented:
+Trước Phase 3, source C++ chạy tuần tự:
 
 ```cpp
 vad->AcceptWaveform(...)
@@ -557,7 +574,7 @@ while (!vad->Empty()) {
 }
 ```
 
-Tức là:
+Nghĩa là:
 
 ```text
 ALSA read
@@ -571,11 +588,21 @@ offline Whisper DecodeStream()
 quay lại audio loop
 ```
 
-Trong lúc `DecodeStream()` chạy, cùng thread đó không tiếp tục `alsa.Read()`.
+Trong lúc `DecodeStream()` chạy, audio loop bị dừng.
 
-ALSA buffer có thể giữ audio nên thực tế hiện tại vẫn khá ổn, nhưng đây **không phải kiến trúc realtime decoupled**.
+Sau Phase 3, binary đã được refactor thành:
 
----
+```text
+ALSA / Silero VAD producer
+        ↓
+   speech_queue
+        ↓
+Whisper STT worker
+```
+
+Whisper recognizer vẫn được load một lần và resident. Audio/VAD producer không còn gọi `DecodeStream()`, nên microphone capture không bị STT block nữa.
+
+> Đây là **Phase 3 DONE**. Bottleneck chính còn lại nằm ở Python: `voice_assistant.py` vẫn block đọc sherpa output trong lúc LLM đang stream response.
 
 ## 10.2 Python bị block trong lúc stream LLM
 
@@ -646,20 +673,11 @@ LLMBackend
 
 ---
 
-## 10.5 Không có audio enhancement
+## 10.5 Audio enhancement chưa được integrate
 
-Raw microphone audio được đưa trực tiếp vào Silero.
+Project đã benchmark candidate enhancement nhưng production pipeline hiện vẫn đưa raw microphone audio vào Silero.
 
-Khi có:
-
-```text
-fan
-hum
-hiss
-environment noise
-```
-
-VAD/STT phải tự chịu toàn bộ noise.
+GTCRN đã chạy được trên runtime hiện tại; DPDFNet2 bị chặn bởi ONNX opset incompatibility. Enhancement vẫn là optional module và sẽ chỉ integrate sau khi architecture refactor ổn định và noisy real-world A/B test đạt yêu cầu.
 
 ---
 
@@ -953,120 +971,144 @@ Không đổi nhiều model cùng lúc vì khi quality/latency thay đổi sẽ 
 
 # 18. Target pipeline
 
+Target được chia rõ thành **C++ speech runtime** và **Python application runtime**:
+
 ```text
-                         AUDIO FRONTEND
+                    C++ SPEECH RUNTIME
+                         Audio / ALSA
                               │
                               ▼
-                    Audio Enhancement
-                      [optional module]
+                 [Audio Enhancement — optional]
                               │
                               ▼
-                     Silero VAD Worker
+                    Silero VAD producer
                               │
                         speech_queue
                               │
                               ▼
-                    Turn Controller
-                 [Smart Turn về sau]
+                  Whisper Tiny.en STT worker
+                              │
+                    transcript + latency
                               │
                               ▼
-                    Whisper STT Worker
+                    PYTHON APPLICATION
+                    SpeechRuntimeHandler
                               │
                      transcript_queue
                               │
                               ▼
-                    Transcript Gate
+                 TranscriptGateHandler
                               │
                      valid_turn_queue
                               │
                               ▼
-                       LLM Worker
-                  ┌───────────┴───────────┐
-                  ▼                       ▼
-            Local Backend           Remote Backend
-              Gemma 1B            RTX 5090 / server
-              llama.cpp           OpenAI-compatible
-                  │                       │
-                  └───────────┬───────────┘
-                              ▼
-                      Streaming response
+                         LLMHandler
+                              │
+                     llm_output_queue
                               │
                               ▼
-                    [TTS Handler — later]
+                    ResponseProcessor
+                              │
+                              ▼
+             [ConversationManager — Phase 5]
+                              │
+                              ▼
+             [LLMBackend abstraction — Phase 6]
+                              │
+                              ▼
+                 [Smart Turn / Cancel / TTS later]
 ```
 
----
+Điểm khóa:
+
+- `speech_queue` thuộc C++ runtime và đã có từ Phase 3.
+- Python **không tạo lại Audio/VAD hoặc STT worker**.
+- Phase 4 bắt đầu tại `SpeechRuntimeHandler → transcript_queue`.
+- `ConversationManager`, `LLMBackend`, Smart Turn và cancellation tiếp tục nằm đúng phase riêng.
 
 # 19. Mapping HF → Project
 
 | HF `speech-to-speech` | Project Jetson |
 |---|---|
-| `VADHandler` | Silero/sherpa VAD Worker |
-| `spoken_prompt_queue` | `speech_queue` |
-| STT backend | Whisper Tiny.en / sherpa-onnx |
-| `stt_output_queue` | `transcript_queue` |
-| `TranscriptionNotifier` | Transcript event + project Transcript Gate |
+| `VADHandler` | Silero VAD producer trong C++ speech runtime |
+| `spoken_prompt_queue` | `speech_queue` trong C++ |
+| STT backend | Whisper Tiny.en worker / sherpa-onnx |
+| `stt_output_queue` | `transcript_queue` trong Python Phase 4 |
+| `TranscriptionNotifier` | `SpeechRuntimeHandler` + transcript event |
+| validation layer | `TranscriptGateHandler` riêng của project |
 | `text_prompt_queue` | `valid_turn_queue` |
-| LLM handler | Local/Remote LLM Backend |
-| `LMOutputProcessor` | Streaming response processor |
-| `CancelScope` | Cancellation token / response cancel |
-| `SpeculativeTurnTracker` | Turn ID + revision + Smart Turn state |
+| LLM handler | `LLMHandler` ở Phase 4; backend abstraction ở Phase 6 |
+| `LMOutputProcessor` | `ResponseProcessor` |
+| `CancelScope` | Cancellation token / response cancel — later |
+| `SpeculativeTurnTracker` | Turn ID + revision + Smart Turn state — later |
 | TTS handler | Deferred |
-| `RealtimeService` | Future conversation/turn manager |
+| `RealtimeService` | Future `ConversationManager` / realtime coordination |
 
-Đây là mapping trực tiếp, không phải tự nghĩ một kiến trúc hoàn toàn khác.
-
----
+Đây vẫn là mapping trực tiếp từ HF, nhưng boundary giữa C++ và Python được giữ theo implementation thực tế của project.
 
 # 20. Model strategy mới
 
-## 20.1 Audio Enhancement — **candidate mới**
+## 20.1 Audio Enhancement — **optional, benchmark đã có candidate thực tế**
 
-Reference từ HF:
-
-```text
-DeepFilterNet
-```
-
-### Tại sao thêm?
-
-Vị trí theo HF:
+Reference architecture của HF có slot:
 
 ```text
-raw audio
- ↓
-audio enhancement
- ↓
-speech pipeline
+audio_enhancement
 ```
 
-Mục đích:
+và HF dùng DeepFilterNet cho feature này.
 
-- giảm stationary/background noise;
-- đưa audio sạch hơn cho downstream;
-- giảm gánh nặng cho VAD/STT;
-- giảm khả năng Whisper hallucinate từ audio xấu.
+Trên Jetson Nano, project không copy nguyên implementation đó mà benchmark model/runtime phù hợp với sherpa-onnx hiện có.
+
+### Kết quả benchmark hiện tại
+
+Đã thử:
+
+```text
+DPDFNet2 ONNX
+```
+
+nhưng model dùng ONNX opset 17, trong khi ONNX Runtime hiện tại của Jetson chỉ guarantee đến opset 16:
+
+```text
+DPDFNet2 → model load FAIL do opset incompatibility
+```
+
+Candidate chạy được:
+
+```text
+GTCRN simple ONNX
+```
+
+Kết quả online benchmark ban đầu:
+
+```text
+chunk duration : 10 ms
+audio duration : 6.625 s
+elapsed        : 2.383 s
+RTF            : 0.360
+peak RSS       : ~27 MB
+threads        : 1
+swap           : 0
+```
+
+Clean-speech preservation test:
+
+```text
+RAW WAV   → Whisper
+GTCRN WAV → Whisper
+```
+
+cho cùng transcript, nên chưa thấy dấu hiệu GTCRN phá speech sạch.
 
 ### Quyết định
 
-**Không integrate ngay.**
+- GTCRN là candidate phù hợp để giữ lại.
+- **Chưa integrate vào production pipeline trong Phase 3/4.**
+- Audio enhancement vẫn là optional module.
+- Khi quay lại integration phải tiếp tục test noisy real-world audio và regression với STT.
 
-Trước tiên:
-
-```text
-standalone benchmark
-├── compatibility
-├── RAM
-├── CPU
-├── realtime factor
-└── STT quality before/after
-```
-
-Chỉ merge nếu Nano chạy được trong headroom cho phép.
-
-Điều này bám đúng repo: `audio_enhancement` vốn cũng là **optional feature**, không phải bắt buộc.
-
----
+Điều này vẫn bám đúng triết lý HF: enhancement là optional frontend module, còn implementation được chọn theo giới hạn Jetson Nano.
 
 ## 20.2 VAD — **giữ Silero**
 
@@ -1284,109 +1326,94 @@ trong HF repo.
 
 ---
 
-# 25. Worker + Queue — thay đổi kiến trúc quan trọng nhất
+# 25. Worker + Queue — kiến trúc thực tế sau Phase 3
 
-## Hiện tại
-
-```text
-Sherpa process
-  ↓ stdout
-Python
-  ↓
-LLM request
-  ↓
-Python block cho đến khi LLM xong
-```
-
-Có buffering, nhưng phần lớn là:
+Phase 3 đã hoàn thành phần speech concurrency trong C++:
 
 ```text
-OS pipe / ALSA buffering
-```
-
-không phải application-controlled realtime flow.
-
----
-
-## Target theo HF
-
-```text
-Audio/VAD Worker
+C++ speech runtime
+ALSA / Silero producer
        ↓
 speech_queue
        ↓
-STT Worker
+Whisper STT worker
+```
+
+Nhờ đó Whisper decode không còn block microphone capture.
+
+Bottleneck hiện tại nằm ở Python:
+
+```text
+Speech runtime output
+       ↓
+voice_assistant.py
+       ↓
+read transcript
+       ↓
+LLM HTTP streaming
+       ↓
+Python block cho đến khi response kết thúc
+       ↓
+mới quay lại đọc sherpa output
+```
+
+Sherpa vẫn có thể tiếp tục chạy, nhưng output phải nằm trong Linux pipe buffer. Đây là **implicit buffering**, chưa phải application-controlled queue.
+
+## Target Phase 4
+
+```text
+C++ speech runtime
+       ↓ transcript + latency
+SpeechRuntimeHandler
        ↓
 transcript_queue
        ↓
-Gate
+TranscriptGateHandler
        ↓
-LLM Worker
+valid_turn_queue
+       ↓
+LLMHandler
+       ↓
+llm_output_queue
+       ↓
+ResponseProcessor
 ```
 
 ### Lợi ích chính
 
 Không phải:
 
-> “Queue làm Whisper nhanh hơn.”
+> “Queue làm Whisper hoặc Gemma nhanh hơn.”
 
 Mà là:
 
 ```text
-VAD không phải chờ LLM
-STT không phụ thuộc LLM generation time
-LLM streaming không khóa audio frontend
-mỗi stage có queue riêng
-turn metadata rõ
-cancellation dễ
-backpressure đo được
+SpeechRuntimeHandler luôn drain sherpa output
+LLM generation không khóa transcript ingestion
+Gate chạy độc lập
+LLM worker sở hữu request/history tạm thời
+ResponseProcessor là nơi duy nhất print/log
+turn metadata và queue metrics rõ ràng
+chuẩn bị cho cancellation/barge-in sau này
 ```
 
-Ví dụ:
+Phase 4 **không tạo thêm `speech_queue` Python**, vì queue đó đã thuộc C++ runtime.
+
+# 26. Phase 3 prerequisite — **DONE**
+
+Điều kiện bắt buộc trước khi làm Python queue architecture là phải tách Audio/VAD khỏi STT thật sự.
+
+Điều này đã được xử lý trong Phase 3 bằng producer–consumer bên trong C++:
 
 ```text
-Turn 1:
-VAD ─ STT ─────────────── LLM generation ─────
-
-Turn 2:
-          VAD ─ STT ─ queue ───────────── LLM
-
-Turn 3:
-                 VAD ─ STT ─ queue ───────────
+ALSA / Silero producer
+        ↓
+   speech_queue
+        ↓
+Whisper STT worker
 ```
 
----
-
-# 26. Quan trọng: phải tách VAD/STT thật sự
-
-Nếu chỉ viết:
-
-```python
-vad_queue = Queue()
-stt_queue = Queue()
-```
-
-nhưng vẫn gọi cùng executable:
-
-```text
-sherpa-onnx-vad-alsa-offline-asr
-```
-
-thì chưa giải quyết bản chất.
-
-Executable đó hiện làm:
-
-```text
-Audio read → VAD → Offline STT
-```
-
-trong cùng loop.
-
-Do đó phase queue cần một prerequisite:
-
-> **Tách speech capture/VAD khỏi offline STT execution.**
-
-Vẫn có thể giữ:
+Giữ nguyên:
 
 ```text
 sherpa-onnx
@@ -1394,9 +1421,11 @@ Silero
 Whisper Tiny.en
 ```
 
-nhưng orchestration phải tách stage theo cách HF tách `VADHandler` và STT backend.
+Không cần tách thành hai process và không cần spawn `sherpa-onnx-offline` cho từng WAV.
 
----
+Whisper recognizer được load một lần và resident.
+
+Vì prerequisite này đã hoàn thành, Phase 4 chỉ cần giải quyết Python orchestration từ transcript trở đi.
 
 # 27. Smart Turn — thêm sau khi Worker/Turn State ổn định
 
@@ -1554,128 +1583,282 @@ contains ()[]{} → DROP
 
 # 32. Phase 2 — Audio Enhancement benchmark
 
-**Status: NEXT**
+**Status: BENCHMARKED / integration deferred**
 
-Bám theo HF feature:
+HF reference có optional `audio_enhancement`, nhưng Jetson cần model/runtime phù hợp phần cứng hiện tại.
 
-```text
-audio_enhancement → DeepFilterNet
-```
-
-### Không sửa production pipeline ngay.
-
-Test standalone:
+Đã kiểm tra:
 
 ```text
-raw wav
- ↓
-DeepFilterNet
- ↓
-cleaned wav
+DPDFNet2
+→ không load được vì model opset 17 vượt mức ONNX Runtime hiện tại
 ```
 
-Benchmark:
+GTCRN simple:
 
 ```text
-1. installation/runtime compatibility
-2. RAM increase
-3. CPU usage
-4. processing latency / realtime factor
-5. Whisper transcript before vs after
-6. số annotation/hallucination giảm hay không
+offline denoiser → PASS
+online denoiser  → PASS
+RTF online       → 0.360
+peak RSS         → ~27 MB
+threads          → 1
+swap             → 0
 ```
 
-### Go / No-Go
-
-Chỉ integrate khi:
+Clean-speech preservation:
 
 ```text
-quality improvement rõ
-AND
-resource overhead chấp nhận được
+RAW → Whisper
+GTCRN → Whisper
 ```
 
-Nếu không pass thì bỏ module; architecture vẫn giữ optional enhancement slot.
+cho cùng transcript.
 
----
+### Kết luận Phase 2
+
+- GTCRN là candidate phù hợp với runtime hiện tại.
+- Chưa integrate enhancement vào production pipeline.
+- Integration được trì hoãn để Phase 3/4 chỉ thay architecture, tránh đổi nhiều biến cùng lúc.
+- Khi quay lại enhancement cần noisy real-world A/B test và regression STT trước khi officialize dependency.
 
 # 33. Phase 3 — Tách Audio/VAD khỏi STT
 
-**Status: PLANNED**
+**Status: DONE**
 
-Mục tiêu:
+Đã refactor binary C++ hiện tại theo producer–consumer:
 
 ```text
-Audio Capture / VAD Worker
+ALSA / Silero VAD producer
         ↓
-speech_queue
+   speech_queue
         ↓
-STT Worker
+Whisper STT worker
 ```
 
-### Giữ model
+### Giữ nguyên
 
 ```text
 Silero
 Whisper Tiny.en
 sherpa-onnx
+Python interface bên ngoài
+GTCRN chưa integrate
 ```
 
-Không đổi model trong cùng phase.
+Whisper recognizer được load một lần và resident.
 
-### Acceptance
-
-- audio capture chạy liên tục;
-- STT decode không block audio capture;
-- mỗi segment có `turn_id`;
-- queue không mất segment trong test overlap;
-- latency không regression đáng kể.
-
----
-
-# 34. Phase 4 — Handler/Queue architecture
-
-**Status: PLANNED**
-
-Tạo module gần với cách HF tổ chức:
+Audio/VAD producer không gọi `DecodeStream()` nữa; STT worker duy nhất chịu trách nhiệm:
 
 ```text
-Audio/VAD Handler
-STT Handler
-Transcript Gate Handler
-LLM Handler
-Response Processor
+CreateStream
+→ AcceptWaveform
+→ DecodeStream
+→ GetResult
 ```
 
-Mỗi handler có:
+Queue sở hữu copy/move của speech samples trước `vad->Pop()`.
+
+### Latency contract
+
+Giữ nguyên:
 
 ```text
-queue_in
-queue_out
-stop_event
-metrics
-turn metadata
+VAD = speech end → segment ready
+STT = segment ready → transcript ready
 ```
+
+Queue wait bên trong C++ hiện được tính chung vào STT latency. Phase 4 mới thêm queue/worker metric chi tiết ở Python.
+
+### Kết quả kiến trúc
+
+```text
+Whisper decode không còn block microphone capture
+```
+
+Đây là prerequisite đã hoàn thành để chuyển sang Phase 4.
+
+# 34. Phase 4 — Python Handler/Queue architecture
+
+**Status: NEXT / PLANNED**
+
+Sau Phase 3, `Audio/VAD → speech_queue → STT` đã thuộc C++ runtime. Vì vậy Phase 4 **không tách lại Audio/VAD hoặc Whisper bằng Python**.
+
+Kiến trúc Phase 4:
+
+```text
+                    C++ speech runtime
+ALSA → Silero VAD → speech_queue → Whisper worker
+                              │
+                              │ transcript + latency
+                              ▼
+                    SpeechRuntimeHandler
+                              │
+                     transcript_queue
+                              ▼
+                  TranscriptGateHandler
+                              │
+                     valid_turn_queue
+                              ▼
+                         LLMHandler
+                              │
+                     llm_output_queue
+                              ▼
+                    ResponseProcessor
+```
+
+### Mục tiêu chính
+
+Hiện `voice_assistant.py` đọc transcript rồi gọi LLM HTTP streaming ngay trong cùng loop, nên trong lúc LLM generate Python không tiếp tục drain sherpa output.
+
+Phase 4 phải đảm bảo:
+
+```text
+LLMHandler đang generate
+        │
+        └── SpeechRuntimeHandler vẫn đọc sherpa output liên tục
+```
+
+Không còn dùng Linux pipe như queue ngầm.
+
+### Cấu trúc Python vừa đủ
+
+```text
+app/
+├── voice_assistant.py
+├── config.py
+├── core/
+│   ├── __init__.py
+│   └── messages.py
+└── handlers/
+    ├── __init__.py
+    ├── speech_runtime.py
+    ├── transcript_gate.py
+    ├── llm.py
+    └── response.py
+```
+
+### Responsibility
+
+`SpeechRuntimeHandler`
+
+```text
+start sherpa subprocess
+→ continuously read runtime output
+→ parse transcript + VAD/STT/TOTAL
+→ timestamp T2 ngay khi transcript đến
+→ construct turn metadata
+→ transcript_queue.put()
+```
+
+`TranscriptGateHandler`
+
+```text
+transcript_queue
+→ giữ nguyên Gate v1 hiện tại
+→ DROP hoặc valid_turn_queue
+```
+
+`LLMHandler`
+
+```text
+valid_turn_queue
+→ giữ history list hiện tại
+→ HTTP /v1/chat/completions
+→ stream token vào llm_output_queue
+```
+
+Chưa tạo `ConversationManager` ở Phase 4.
+
+`ResponseProcessor`
+
+```text
+terminal output
+conversation log
+benchmark/full-pipeline log
+latency summary
+```
+
+là nơi duy nhất chịu trách nhiệm print/write output.
 
 ### Queue tối thiểu
 
 ```text
-speech_queue
 transcript_queue
 valid_turn_queue
 llm_output_queue
 ```
 
-### Thêm metric
+`speech_queue` **không nằm trong Python** vì đã có trong C++ Phase 3.
+
+### Queue policy
+
+Phase 4 ưu tiên queue không block transcript ingestion. Không để:
 
 ```text
-queue_wait_ms
-queue_depth
-worker_processing_ms
-turn_id
+SpeechRuntimeHandler
+→ blocking Queue.put()
+→ ngừng drain sherpa output
 ```
 
----
+Text/metadata rất nhỏ, nên trước tiên đo queue depth và backlog thực tế; backpressure/bounded policy nâng cao để phase realtime/cancellation sau.
+
+### Turn metadata
+
+Mỗi turn giữ tối thiểu:
+
+```text
+turn_id / transcript identity
+text
+t2
+vad_s
+stt_s
+vad_stt_total_s
+transcript_queue_enter
+transcript_queue_leave
+valid_turn_queue_enter
+valid_turn_queue_leave
+gate_processing_s
+llm_processing_s
+t3
+t4
+t5
+```
+
+Lưu ý: nếu C++ output hiện vẫn expose transcript index thay vì true VAD `turn_id`, phải phân biệt rõ hai khái niệm và không giả định chúng luôn giống nhau.
+
+### Metric mới
+
+```text
+transcript_queue_wait_ms
+valid_turn_queue_wait_ms
+gate_processing_ms
+llm_worker_processing_ms
+queue_depth
+```
+
+Vẫn giữ metric baseline:
+
+```text
+T0 → T1 VAD
+T1 → T2 STT
+T2 → T3 Python
+T3 → T4 LLM TTFT
+T4 → T5 LLM generation
+```
+
+### Ngoài scope Phase 4
+
+```text
+GTCRN integration
+ConversationManager
+LLMBackend abstraction
+Smart Turn
+speculative turn / cancellation
+barge-in
+TTS
+```
+
+Các phần này giữ đúng phase riêng phía sau.
 
 # 35. Phase 5 — Conversation Manager + bounded history
 
@@ -1854,7 +2037,7 @@ Bám HF backend architecture nhưng benchmark model phù hợp hardware.
 
 | Stage | Hiện tại | Target gần | Trạng thái |
 |---|---|---|---|
-| Audio enhancement | Không có | DeepFilterNet candidate theo HF | Benchmark |
+| Audio enhancement | Không có | GTCRN simple candidate | Benchmarked / integration deferred |
 | VAD | Silero ONNX | Silero, verify/v5 benchmark | Giữ |
 | Smart Turn | Không | Pipecat Smart Turn v3.2 CPU ONNX | Later |
 | STT | Whisper Tiny.en ONNX | Whisper Tiny.en | Giữ |
@@ -2005,22 +2188,36 @@ T4 first token
 T5 last token
 ```
 
-Sau Worker/Queue thêm:
+Sau Phase 3/4, metric được chia theo boundary thực tế:
 
 ```text
-T_vad_enqueue
-T_stt_dequeue
-T_stt_enqueue
-T_llm_dequeue
+C++:
+T1 = VAD segment ready
+T2 = transcript ready
+STT latency hiện bao gồm C++ speech_queue wait nếu có
+
+Python Phase 4:
+T_transcript_enqueue
+T_transcript_dequeue
+T_valid_enqueue
+T_valid_dequeue
+T3 = LLM request start
+T4 = first token
+T5 = last token
 ```
 
 Để tính:
 
 ```text
-queue wait
-worker processing
+transcript_queue_wait_ms
+valid_turn_queue_wait_ms
+gate_processing_ms
+llm_worker_processing_ms
+queue_depth
 end-to-end latency
 ```
+
+Phase 4 không bắt buộc thay đổi định nghĩa baseline `T0..T5`; metric mới được thêm song song để so trước/sau refactor.
 
 ---
 
@@ -2193,25 +2390,34 @@ cancellation
 [x] Full pipeline benchmark
 [x] Transcript Gate v1
 
-[ ] Benchmark DeepFilterNet audio enhancement
+[x] Benchmark audio enhancement candidate
+    - DPDFNet2: incompatible với ONNX Runtime hiện tại
+    - GTCRN: online/offline PASS, RTF ~0.360, peak RSS ~27 MB
+[ ] Noisy real-world GTCRN A/B test trước khi integrate
 [ ] Verify current Silero version / compare v5 only if needed
-[ ] Decouple Audio/VAD from STT
-[ ] Introduce speech_queue
-[ ] Introduce STT worker
-[ ] Introduce transcript_queue
-[ ] Convert Gate into handler
-[ ] Introduce LLM worker
+
+[x] Decouple Audio/VAD from STT trong C++
+[x] Introduce C++ speech_queue
+[x] Introduce resident Whisper STT worker
+
+[ ] Phase 4: SpeechRuntimeHandler
+[ ] Introduce Python transcript_queue
+[ ] Convert Gate thành TranscriptGateHandler
+[ ] Introduce valid_turn_queue
+[ ] Introduce LLMHandler worker
+[ ] Introduce llm_output_queue
+[ ] Introduce ResponseProcessor
+[ ] Add Python queue/worker metrics
+
 [ ] Add ConversationManager / bounded chat_size
 [ ] Add Local/Remote LLM backend abstraction
 [ ] Benchmark RTX 5090 remote backend
 [ ] Add Smart Turn v3.2
-[ ] Add turn_id / revision
+[ ] Add true turn_id / revision where required
 [ ] Add cancellation/speculative turn
 [ ] Add barge-in
 [ ] Optional TTS
 ```
-
----
 
 # 55. Kiến trúc cuối mong muốn
 
@@ -2222,73 +2428,72 @@ cancellation
                                  │
                                  ▼
                   ┌─────────────────────────────┐
-                  │ Audio Enhancement Handler   │
-                  │ DeepFilterNet if benchmark  │
-                  │ proves viable               │
+                  │ Audio Enhancement [optional]│
+                  │ GTCRN candidate on Nano     │
                   └──────────────┬──────────────┘
                                  │
                                  ▼
+            ┌──────────────── C++ SPEECH RUNTIME ────────────────┐
+            │                                                     │
+            │  Silero VAD producer                               │
+            │          │                                          │
+            │     speech_queue                                    │
+            │          │                                          │
+            │          ▼                                          │
+            │  Whisper Tiny.en STT worker                         │
+            │  sherpa-onnx / ONNX Runtime                         │
+            │                                                     │
+            └───────────────────┬─────────────────────────────────┘
+                                │ transcript + latency
+                                ▼
                   ┌─────────────────────────────┐
-                  │ Silero VAD Worker           │
-                  └──────────────┬──────────────┘
-                                 │
-                           speech_queue
-                                 │
-                                 ▼
-                  ┌─────────────────────────────┐
-                  │ Turn Controller             │
-                  │ Smart Turn v3.2 later       │
-                  └──────────────┬──────────────┘
-                                 │
-                                 ▼
-                  ┌─────────────────────────────┐
-                  │ Whisper Tiny.en STT Worker  │
-                  │ sherpa-onnx / ONNX Runtime  │
+                  │ SpeechRuntimeHandler        │
                   └──────────────┬──────────────┘
                                  │
                         transcript_queue
                                  │
                                  ▼
                   ┌─────────────────────────────┐
-                  │ Transcript Gate Handler     │
+                  │ TranscriptGateHandler       │
                   └──────────────┬──────────────┘
                                  │
                          valid_turn_queue
                                  │
                                  ▼
                   ┌─────────────────────────────┐
-                  │ Conversation Manager        │
-                  │ history / turn_id / state   │
+                  │ LLMHandler                  │
+                  │ Phase 4: current history    │
                   └──────────────┬──────────────┘
+                                 │
+                         llm_output_queue
                                  │
                                  ▼
                   ┌─────────────────────────────┐
-                  │ LLM Backend Handler         │
-                  └──────────┬─────────┬────────┘
-                             │         │
-                   local     │         │ remote
-                             ▼         ▼
-                       llama.cpp    RTX 5090
-                       Gemma 1B    API-compatible
-                             │         │
-                             └────┬────┘
-                                  ▼
-                  ┌─────────────────────────────┐
-                  │ Streaming Response          │
-                  │ + Cancel/Interruption       │
+                  │ ResponseProcessor           │
+                  │ print / logs / metrics      │
                   └──────────────┬──────────────┘
                                  │
-                                 ▼
-                     [Optional TTS Handler]
-```
+                 ┌───────────────┴────────────────┐
+                 │                                │
+                 ▼                                ▼
+      [ConversationManager]            [LLMBackend abstraction]
+            Phase 5                          Phase 6
+                                                │
+                                     ┌──────────┴──────────┐
+                                     ▼                     ▼
+                                  local                 remote
+                                llama.cpp             RTX 5090
+                                Gemma 1B           API-compatible
 
----
+                  [Smart Turn / cancellation / barge-in later]
+                              [Optional TTS]
+```
 
 # 56. Câu giải thích ngắn khi báo cáo với sếp
 
 > Project hiện tại đã chạy local hoàn chỉnh theo pipeline `Silero VAD → Whisper Tiny → Transcript Gate → Gemma 1B`, sử dụng sherpa-onnx/ONNX Runtime cho speech và llama.cpp cho LLM. Hệ thống đã có streaming và benchmark latency.
 >
-> Bước tối ưu tiếp theo không phải đổi model ngẫu nhiên mà là refactor architecture theo `huggingface/speech-to-speech`: tách từng stage thành handler/worker, nối bằng queue, quản lý turn/state riêng, thêm audio enhancement ở frontend và biến LLM thành backend có thể thay giữa local Nano và remote GPU server. Sau khi nền tảng queue/turn ổn định mới thêm Smart Turn và interruption giống realtime pipeline của Hugging Face.
+> Project đã hoàn thành bước tách Audio/VAD khỏi Whisper STT ở C++ bằng producer–consumer và `speech_queue`, nên microphone capture không còn bị `DecodeStream()` block. Bước tiếp theo là Phase 4 ở Python: tách việc đọc speech runtime, Transcript Gate, LLM streaming và output/logging thành các handler riêng nối bằng `transcript_queue`, `valid_turn_queue` và `llm_output_queue`. Sau khi Python orchestration không còn blocking mới tách ConversationManager, LLM backend local/remote, rồi thêm Smart Turn và interruption.
 >
 > Vì Jetson Nano có giới hạn CUDA/RAM, project học **framework architecture** của Hugging Face nhưng giữ các model nhẹ đang chạy tốt thay vì copy nguyên default Parakeet/Qwen3-TTS stack.
 
@@ -2362,4 +2567,4 @@ Development strategy   = từng phase + benchmark + rollback được
 
 Ta sẽ không cố biến Jetson Nano thành máy chạy nguyên default stack của Hugging Face.
 
-Ta sẽ biến project hiện tại thành một **phiên bản edge-oriented của cùng kiến trúc modular realtime đó**.
+Ta sẽ biến project hiện tại thành một **phiên bản edge-oriented của cùng kiến trúc modular realtime đó**, với boundary rõ: speech concurrency ở C++, orchestration/queue từ transcript trở đi ở Python.
