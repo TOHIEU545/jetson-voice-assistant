@@ -57,7 +57,18 @@ GTCRN_MODEL = os.path.join(
     "gtcrn_simple.onnx",
 )
 
-ENABLE_GTCRN = False
+# Default: GTCRN OFF
+#
+# Enable:
+#   VOICE_ASSISTANT_GTCRN=1 python3 voice_assistant.py
+#
+# Disable:
+#   python3 voice_assistant.py
+# or:
+#   VOICE_ASSISTANT_GTCRN=0 python3 voice_assistant.py
+ENABLE_GTCRN = (
+    os.environ.get("VOICE_ASSISTANT_GTCRN", "0") == "1"
+)
 
 MIC_DEVICE = "plughw:2,0"
 
