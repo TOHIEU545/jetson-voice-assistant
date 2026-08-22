@@ -1,0 +1,652 @@
+--- a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
+@@ -7,7 +7,9 @@
+ #include <stdlib.h>
+ 
+ #include <algorithm>
++#include <array>
+ #include <chrono>
++#include <cmath>
+ #include <condition_variable>
+ #include <memory>
+ #include <mutex>  // NOLINT
+@@ -17,7 +19,11 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "onnxruntime_cxx_api.h"
++
+ #include "sherpa-onnx/csrc/alsa.h"
++#include "sherpa-onnx/csrc/math.h"
++#include "sherpa-onnx/csrc/offline-stream.h"
+ #include "sherpa-onnx/csrc/macros.h"
+ #include "sherpa-onnx/csrc/circular-buffer.h"
+ #include "sherpa-onnx/csrc/offline-recognizer.h"
+@@ -31,6 +37,295 @@
+   fprintf(stderr, "\nCaught Ctrl + C. Exiting...\n");
+ }
+ 
++
++struct SmartTurnResult {
++  bool ok = false;
++  bool complete = false;
++
++  float probability = 0.0f;
++
++  double audio_prep_ms = 0.0;
++  double feature_ms = 0.0;
++  double infer_ms = 0.0;
++  double total_ms = 0.0;
++};
++
++class SmartTurnRuntime {
++ public:
++  SmartTurnRuntime(
++      const std::string &model_path,
++      float threshold,
++      int32_t num_threads)
++      : threshold_(threshold),
++        env_(ORT_LOGGING_LEVEL_WARNING, "smart-turn") {
++    session_options_.SetIntraOpNumThreads(num_threads);
++
++    // Match the lightweight CPU setup used by the standalone probe.
++    session_options_.SetInterOpNumThreads(1);
++    session_options_.SetGraphOptimizationLevel(
++        GraphOptimizationLevel::ORT_ENABLE_ALL);
++
++    session_ = std::make_unique<Ort::Session>(
++        env_,
++        model_path.c_str(),
++        session_options_);
++  }
++
++  SmartTurnResult Evaluate(
++      const std::vector<float> &turn_audio,
++      int32_t sample_rate) {
++    SmartTurnResult result;
++
++    if (sample_rate != kSampleRate || turn_audio.empty()) {
++      fprintf(
++          stderr,
++          "[SMART_TURN] Invalid audio: sample_rate=%d samples=%zu\n",
++          sample_rate,
++          turn_audio.size());
++      return result;
++    }
++
++    const auto total_start =
++        std::chrono::steady_clock::now();
++
++    // --------------------------------------------------------
++    // Audio preparation
++    //
++    // Smart Turn v3 expects the last <= 8 seconds.
++    // Shorter inputs are zero padded at the BEGINNING.
++    // --------------------------------------------------------
++
++    const auto prep_start =
++        std::chrono::steady_clock::now();
++
++    std::vector<float> audio(kMaxSamples, 0.0f);
++
++    const size_t copy_count =
++        std::min(turn_audio.size(),
++                 static_cast<size_t>(kMaxSamples));
++
++    const size_t src_offset =
++        turn_audio.size() - copy_count;
++
++    const size_t dst_offset =
++        audio.size() - copy_count;
++
++    std::copy(
++        turn_audio.begin() + src_offset,
++        turn_audio.end(),
++        audio.begin() + dst_offset);
++
++    // WhisperFeatureExtractor(do_normalize=True):
++    // zero mean / unit variance normalization.
++    //
++    // Since Smart Turn pads to exactly 8 seconds before feature
++    // extraction, normalization is performed over the complete
++    // 8-second waveform, including the leading zero padding.
++
++    double sum = 0.0;
++
++    for (float x : audio) {
++      sum += x;
++    }
++
++    const double mean =
++        sum / static_cast<double>(audio.size());
++
++    double variance_sum = 0.0;
++
++    for (float x : audio) {
++      const double d =
++          static_cast<double>(x) - mean;
++      variance_sum += d * d;
++    }
++
++    const double variance =
++        variance_sum /
++        static_cast<double>(audio.size());
++
++    const double inv_std =
++        1.0 / std::sqrt(variance + 1.0e-7);
++
++    for (float &x : audio) {
++      x = static_cast<float>(
++          (static_cast<double>(x) - mean) *
++          inv_std);
++    }
++
++    const auto prep_end =
++        std::chrono::steady_clock::now();
++
++    result.audio_prep_ms =
++        std::chrono::duration<double, std::milli>(
++            prep_end - prep_start)
++            .count();
++
++    // --------------------------------------------------------
++    // Whisper feature extraction
++    //
++    // 8 seconds @ 16 kHz
++    // -> 800 frames
++    // -> 80 mel bins
++    // --------------------------------------------------------
++
++    const auto feature_start =
++        std::chrono::steady_clock::now();
++
++    sherpa_onnx::WhisperTag whisper_tag;
++    whisper_tag.dim = kFeatureDim;
++
++    sherpa_onnx::OfflineStream feature_stream(
++        whisper_tag);
++
++    feature_stream.AcceptWaveform(
++        kSampleRate,
++        audio.data(),
++        static_cast<int32_t>(audio.size()));
++
++    std::vector<float> features =
++        feature_stream.GetFrames();
++
++    const int32_t num_frames =
++        static_cast<int32_t>(
++            features.size() / kFeatureDim);
++
++    if (num_frames != kNumFrames) {
++      fprintf(
++          stderr,
++          "[SMART_TURN] Expected %d frames, got %d\n",
++          kNumFrames,
++          num_frames);
++      return result;
++    }
++
++    sherpa_onnx::NormalizeWhisperFeatures(
++        features.data(),
++        num_frames,
++        kFeatureDim);
++
++    // sherpa features:
++    //   [800, 80]
++    //
++    // Smart Turn ONNX:
++    //   [1, 80, 800]
++
++    std::vector<float> model_input(
++        kFeatureDim * kNumFrames);
++
++    for (int32_t frame = 0;
++         frame != kNumFrames;
++         ++frame) {
++      for (int32_t bin = 0;
++           bin != kFeatureDim;
++           ++bin) {
++        model_input[
++            bin * kNumFrames + frame] =
++            features[
++                frame * kFeatureDim + bin];
++      }
++    }
++
++    const auto feature_end =
++        std::chrono::steady_clock::now();
++
++    result.feature_ms =
++        std::chrono::duration<double, std::milli>(
++            feature_end - feature_start)
++            .count();
++
++    // --------------------------------------------------------
++    // ONNX inference
++    // --------------------------------------------------------
++
++    const auto infer_start =
++        std::chrono::steady_clock::now();
++
++    std::array<int64_t, 3> input_shape{
++        1,
++        kFeatureDim,
++        kNumFrames,
++    };
++
++    auto memory_info =
++        Ort::MemoryInfo::CreateCpu(
++            OrtArenaAllocator,
++            OrtMemTypeDefault);
++
++    Ort::Value input_tensor =
++        Ort::Value::CreateTensor<float>(
++            memory_info,
++            model_input.data(),
++            model_input.size(),
++            input_shape.data(),
++            input_shape.size());
++
++    const char *input_names[] = {
++        "input_features",
++    };
++
++    const char *output_names[] = {
++        "logits",
++    };
++
++    auto outputs = session_->Run(
++        Ort::RunOptions{nullptr},
++        input_names,
++        &input_tensor,
++        1,
++        output_names,
++        1);
++
++    const auto infer_end =
++        std::chrono::steady_clock::now();
++
++    result.infer_ms =
++        std::chrono::duration<double, std::milli>(
++            infer_end - infer_start)
++            .count();
++
++    const float *output =
++        outputs[0].GetTensorData<float>();
++
++    result.probability = output[0];
++
++    if (!std::isfinite(result.probability)) {
++      fprintf(
++          stderr,
++          "[SMART_TURN] Non-finite model output\n");
++      return result;
++    }
++
++    // Model output already contains sigmoid probability.
++    result.complete =
++        result.probability > threshold_;
++
++    result.ok = true;
++
++    const auto total_end =
++        std::chrono::steady_clock::now();
++
++    result.total_ms =
++        std::chrono::duration<double, std::milli>(
++            total_end - total_start)
++            .count();
++
++    return result;
++  }
++
++ private:
++  static constexpr int32_t kSampleRate = 16000;
++  static constexpr int32_t kFeatureDim = 80;
++  static constexpr int32_t kNumFrames = 800;
++  static constexpr int32_t kMaxSamples =
++      8 * kSampleRate;
++
++  float threshold_;
++
++  Ort::Env env_;
++  Ort::SessionOptions session_options_;
++  std::unique_ptr<Ort::Session> session_;
++};
++
+ int32_t main(int32_t argc, char *argv[]) {
+   signal(SIGINT, Handler);
+ 
+@@ -98,10 +393,31 @@
+   sherpa_onnx::OfflineRecognizerConfig asr_config;
+   sherpa_onnx::OnlineSpeechDenoiserConfig denoiser_config;
+ 
++  std::string smart_turn_model;
++  float smart_turn_threshold = 0.5f;
++  int32_t smart_turn_num_threads = 4;
++
+   vad_config.Register(&po);
+   asr_config.Register(&po);
+   denoiser_config.model.gtcrn.Register(&po);
+ 
++  po.Register(
++      "smart-turn-model",
++      &smart_turn_model,
++      "Path to the Smart Turn ONNX model. "
++      "Leave empty to disable Smart Turn.");
++
++  po.Register(
++      "smart-turn-threshold",
++      &smart_turn_threshold,
++      "Smart Turn COMPLETE probability threshold.");
++
++  po.Register(
++      "smart-turn-num-threads",
++      &smart_turn_num_threads,
++      "Number of ONNX Runtime intra-op threads "
++      "used by Smart Turn.");
++
+   po.Read(argc, argv);
+   if (po.NumArgs() != 1) {
+     fprintf(stderr, "Please provide only 1 argument: the device name\n");
+@@ -115,6 +431,9 @@
+   const bool enhancement_enabled =
+       !denoiser_config.model.gtcrn.model.empty();
+ 
++  const bool smart_turn_enabled =
++      !smart_turn_model.empty();
++
+   if (enhancement_enabled) {
+     fprintf(stderr, "%s\n", denoiser_config.ToString().c_str());
+   }
+@@ -134,6 +453,27 @@
+     return -1;
+   }
+ 
++  if (smart_turn_enabled) {
++    if (smart_turn_threshold < 0.0f ||
++        smart_turn_threshold > 1.0f) {
++      fprintf(
++          stderr,
++          "Smart Turn threshold must be in [0, 1]. "
++          "Given: %.3f\n",
++          smart_turn_threshold);
++      return -1;
++    }
++
++    if (smart_turn_num_threads < 1) {
++      fprintf(
++          stderr,
++          "Smart Turn num threads must be >= 1. "
++          "Given: %d\n",
++          smart_turn_num_threads);
++      return -1;
++    }
++  }
++
+   fprintf(stderr, "Creating recognizer ...\n");
+   sherpa_onnx::OfflineRecognizer recognizer(asr_config);
+   fprintf(stderr, "Recognizer created!\n");
+@@ -178,6 +518,62 @@
+     fprintf(stderr, "[ENHANCEMENT] GTCRN: OFF\n");
+   }
+ 
++  std::unique_ptr<SmartTurnRuntime> smart_turn;
++
++  if (smart_turn_enabled) {
++    fprintf(stderr, "[SMART_TURN] state: ON\n");
++    fprintf(
++        stderr,
++        "[SMART_TURN] model: %s\n",
++        smart_turn_model.c_str());
++    fprintf(
++        stderr,
++        "[SMART_TURN] threshold: %.3f\n",
++        smart_turn_threshold);
++    fprintf(
++        stderr,
++        "[SMART_TURN] num_threads: %d\n",
++        smart_turn_num_threads);
++
++    fprintf(
++        stderr,
++        "[SMART_TURN] Creating resident runtime ...\n");
++
++    const auto smart_turn_load_start =
++        std::chrono::steady_clock::now();
++
++    try {
++      smart_turn =
++          std::make_unique<SmartTurnRuntime>(
++              smart_turn_model,
++              smart_turn_threshold,
++              smart_turn_num_threads);
++    } catch (const Ort::Exception &e) {
++      fprintf(
++          stderr,
++          "[SMART_TURN] Failed to load model: %s\n",
++          e.what());
++      return -1;
++    }
++
++    const auto smart_turn_load_end =
++        std::chrono::steady_clock::now();
++
++    const double smart_turn_load_ms =
++        std::chrono::duration<double, std::milli>(
++            smart_turn_load_end -
++            smart_turn_load_start)
++            .count();
++
++    fprintf(
++        stderr,
++        "[SMART_TURN] Runtime ready. "
++        "load_ms=%.3f\n",
++        smart_turn_load_ms);
++  } else {
++    fprintf(stderr, "[SMART_TURN] state: OFF\n");
++  }
++
+   fprintf(stderr, "Started. Please speak\n");
+ 
+   int32_t window_size = vad_config.silero_vad.window_size;
+@@ -212,6 +608,15 @@
+     // Keep the existing transcript numbering contract unchanged.
+     int32_t index = 0;
+ 
++    // Smart Turn may decide that one VAD segment is not yet
++    // a complete conversational turn.
++    //
++    // In that case we keep the audio here and append the next
++    // VAD segment before evaluating again.
++    std::vector<float> held_audio;
++    int32_t held_root_turn_id = -1;
++    int32_t held_segment_count = 0;
++
+     while (true) {
+       SpeechSegment item;
+ 
+@@ -234,10 +639,159 @@
+         speech_queue.pop();
+       }
+ 
+-      // Queue mutex is released before Whisper inference.
++      // Queue mutex is released before any inference.
++
++      // ------------------------------------------------------
++      // Build the logical turn audio.
++      //
++      // SMART TURN OFF:
++      //     one VAD segment -> Whisper
++      //
++      // SMART TURN ON:
++      //     held segments + current VAD segment
++      //         -> Smart Turn
++      // ------------------------------------------------------
++
++      std::vector<float> turn_audio;
++
++      int32_t logical_turn_id = item.turn_id;
++      int32_t segment_count = 1;
++
++      if (smart_turn && !held_audio.empty()) {
++        logical_turn_id = held_root_turn_id;
++        segment_count =
++            held_segment_count + 1;
++
++        turn_audio =
++            std::move(held_audio);
++
++        turn_audio.reserve(
++            turn_audio.size() +
++            item.samples.size());
++
++        turn_audio.insert(
++            turn_audio.end(),
++            item.samples.begin(),
++            item.samples.end());
++      } else {
++        turn_audio =
++            std::move(item.samples);
++      }
++
++      // ------------------------------------------------------
++      // Smart Turn completeness decision
++      // ------------------------------------------------------
++
++      if (smart_turn) {
++        SmartTurnResult smart_result;
++
++        try {
++          smart_result =
++              smart_turn->Evaluate(
++                  turn_audio,
++                  sample_rate);
++        } catch (const Ort::Exception &e) {
++          fprintf(
++              stderr,
++              "[SMART_TURN] "
++              "turn_id=%d candidate_id=%d "
++              "segment_count=%d "
++              "ERROR=%s fallback=WHISPER\n",
++              logical_turn_id,
++              item.turn_id,
++              segment_count,
++              e.what());
++
++          // Fail open:
++          // speech must still reach Whisper if Smart Turn
++          // inference fails unexpectedly.
++          smart_result.ok = false;
++        }
++
++        if (smart_result.ok) {
++          const char *decision =
++              smart_result.complete
++                  ? "COMPLETE"
++                  : "INCOMPLETE";
++
++          fprintf(
++              stderr,
++              "[SMART_TURN] "
++              "turn_id=%d "
++              "candidate_id=%d "
++              "segment_count=%d "
++              "audio_prep_ms=%.3f "
++              "feature_ms=%.3f "
++              "infer_ms=%.3f "
++              "total_ms=%.3f "
++              "score=%.6f "
++              "decision=%s\n",
++              logical_turn_id,
++              item.turn_id,
++              segment_count,
++              smart_result.audio_prep_ms,
++              smart_result.feature_ms,
++              smart_result.infer_ms,
++              smart_result.total_ms,
++              smart_result.probability,
++              decision);
++
++          if (!smart_result.complete) {
++            held_audio =
++                std::move(turn_audio);
++
++            held_root_turn_id =
++                logical_turn_id;
++
++            held_segment_count =
++                segment_count;
++
++            fprintf(
++                stderr,
++                "[SMART_TURN] "
++                "turn_id=%d "
++                "state=WAITING_CONTINUATION "
++                "segment_count=%d "
++                "held_samples=%zu\n",
++                held_root_turn_id,
++                held_segment_count,
++                held_audio.size());
++
++            // Do not run Whisper yet.
++            continue;
++          }
++        } else {
++          fprintf(
++              stderr,
++              "[SMART_TURN] "
++              "turn_id=%d candidate_id=%d "
++              "segment_count=%d "
++              "decision=ERROR "
++              "fallback=WHISPER\n",
++              logical_turn_id,
++              item.turn_id,
++              segment_count);
++        }
++
++        // COMPLETE or fail-open.
++        held_audio.clear();
++        held_root_turn_id = -1;
++        held_segment_count = 0;
++      }
++
++      // ------------------------------------------------------
++      // Whisper
++      //
++      // With Smart Turn enabled this receives the entire merged
++      // logical turn, not only the final VAD segment.
++      // ------------------------------------------------------
++
+       auto stream = recognizer.CreateStream();
+-      stream->AcceptWaveform(sample_rate, item.samples.data(),
+-                             item.samples.size());
++
++      stream->AcceptWaveform(
++          sample_rate,
++          turn_audio.data(),
++          turn_audio.size());
+ 
+       recognizer.DecodeStream(stream.get());
+       const auto &result = stream->GetResult();
+@@ -266,6 +820,19 @@
+         ++index;
+       }
+     }
++
++    if (!held_audio.empty()) {
++      fprintf(
++          stderr,
++          "[SMART_TURN] "
++          "turn_id=%d "
++          "state=DISCARDED_ON_SHUTDOWN "
++          "segment_count=%d "
++          "held_samples=%zu\n",
++          held_root_turn_id,
++          held_segment_count,
++          held_audio.size());
++    }
+   });
+ 
+   while (!stop) {

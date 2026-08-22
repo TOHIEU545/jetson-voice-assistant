@@ -5,6 +5,8 @@ import signal
 import threading
 
 from config import (
+    ENABLE_GTCRN,
+    ENABLE_SMART_TURN,
     INITIAL_HISTORY,
     LLM_MODE,
     LLM_BASE_URL,
@@ -30,11 +32,17 @@ from core.revisions import RevisionTracker
 
 
 def build_banner(session_paths):
+    gtcrn_state = "ON" if ENABLE_GTCRN else "OFF"
+    smart_turn_state = (
+        "ON" if ENABLE_SMART_TURN else "OFF"
+    )
+
     return (
         "===================================\n"
         " Jetson Voice Assistant\n"
-        " Mic -> VAD -> Whisper -> Gemma\n"
-        " Phase 4 handlers/queues: ON\n"
+        " Mic -> VAD -> [Smart Turn] -> Whisper -> LLM\n"
+        " [FEATURE] GTCRN      : {}\n"
+        " [FEATURE] SMART TURN : {}\n"
         " Conversation history: ON\n"
         "===================================\n"
         "Project: {}\n"
@@ -44,6 +52,8 @@ def build_banner(session_paths):
         "\n"
         "Speak...\n\n"
     ).format(
+        gtcrn_state,
+        smart_turn_state,
         PROJECT_ROOT,
         session_paths["conversation_log"],
         session_paths["benchmark_log"],

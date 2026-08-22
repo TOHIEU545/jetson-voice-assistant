@@ -57,6 +57,16 @@ GTCRN_MODEL = os.path.join(
     "gtcrn_simple.onnx",
 )
 
+SMART_TURN_MODEL = os.path.join(
+    PROJECT_ROOT,
+    "models",
+    "turn",
+    "smart-turn-v3.2-cpu-opset16-ir8-clean.onnx",
+)
+
+SMART_TURN_THRESHOLD = 0.5
+SMART_TURN_NUM_THREADS = 4
+
 # Default: GTCRN OFF
 #
 # Enable:
@@ -68,6 +78,19 @@ GTCRN_MODEL = os.path.join(
 #   VOICE_ASSISTANT_GTCRN=0 python3 voice_assistant.py
 ENABLE_GTCRN = (
     os.environ.get("VOICE_ASSISTANT_GTCRN", "0") == "1"
+)
+
+# Default: Smart Turn OFF
+#
+# Enable:
+#   VOICE_ASSISTANT_SMART_TURN=1 python3 voice_assistant.py
+#
+# Disable:
+#   python3 voice_assistant.py
+# or:
+#   VOICE_ASSISTANT_SMART_TURN=0 python3 voice_assistant.py
+ENABLE_SMART_TURN = (
+    os.environ.get("VOICE_ASSISTANT_SMART_TURN", "0") == "1"
 )
 
 MIC_DEVICE = "plughw:2,0"
@@ -99,6 +122,15 @@ def build_speech_command():
         command.append(
             "--speech-denoiser-gtcrn-model=" + GTCRN_MODEL
         )
+
+    if ENABLE_SMART_TURN:
+        command.extend([
+            "--smart-turn-model=" + SMART_TURN_MODEL,
+            "--smart-turn-threshold="
+            + str(SMART_TURN_THRESHOLD),
+            "--smart-turn-num-threads="
+            + str(SMART_TURN_NUM_THREADS),
+        ])
 
     command.append(MIC_DEVICE)
 

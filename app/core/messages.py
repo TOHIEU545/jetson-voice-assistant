@@ -12,6 +12,7 @@ TURN_ID_SOURCE_SPEECH_RUNTIME = "speech_runtime"
 
 TURN_COMPLETION_LEGACY_VAD = "legacy_vad"
 TURN_COMPLETION_SMART_TURN = "smart_turn"
+TURN_COMPLETION_SMART_TURN_FALLBACK = "smart_turn_fallback"
 
 VALID_TURN_STATES = (
     TURN_STATE_OPEN,
@@ -97,6 +98,11 @@ def create_transcript_turn(
         "smart_turn_complete": None,
         "smart_turn_score": None,
         "smart_turn_inference_s": None,
+        "smart_turn_audio_prep_s": None,
+        "smart_turn_feature_s": None,
+        "smart_turn_total_s": None,
+        "smart_turn_decision": None,
+        "smart_turn_evaluations": [],
 
         "transcript_queue_enter": None,
         "transcript_queue_leave": None,

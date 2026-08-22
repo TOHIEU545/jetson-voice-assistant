@@ -8,6 +8,9 @@ import threading
 import time
 
 from core.messages import (
+    TURN_COMPLETION_SMART_TURN,
+    TURN_COMPLETION_SMART_TURN_FALLBACK,
+    TURN_ID_SOURCE_SPEECH_RUNTIME,
     create_transcript_turn,
     is_complete_transcript_turn,
 )
@@ -20,6 +23,27 @@ TRANSCRIPT_RE = re.compile(
 LATENCY_RE = re.compile(
     r"^\[LATENCY\]\s+(VAD|STT|TOTAL)\s*:\s*"
     r"([0-9.]+)\s*s$"
+)
+
+SMART_TURN_DECISION_RE = re.compile(
+    r"^\[SMART_TURN\]\s+"
+    r"turn_id=(\d+)\s+"
+    r"candidate_id=(\d+)\s+"
+    r"segment_count=(\d+)\s+"
+    r"audio_prep_ms=([0-9eE+.-]+)\s+"
+    r"feature_ms=([0-9eE+.-]+)\s+"
+    r"infer_ms=([0-9eE+.-]+)\s+"
+    r"total_ms=([0-9eE+.-]+)\s+"
+    r"score=([0-9eE+.-]+)\s+"
+    r"decision=(COMPLETE|INCOMPLETE)$"
+)
+
+SMART_TURN_FALLBACK_RE = re.compile(
+    r"^\[SMART_TURN\]\s+"
+    r"turn_id=(\d+)\s+"
+    r"candidate_id=(\d+)\s+"
+    r"segment_count=(\d+)\s+"
+    r"decision=ERROR\s+fallback=WHISPER$"
 )
 
 # Phase 9 runtime contract.
@@ -57,10 +81,122 @@ class SpeechRuntimeParser(object):
         self.pending_turn = None
         self.next_turn_id = 0
 
+        # Smart Turn decisions arrive before the final transcript.
+        # Keep all candidate evaluations for the active logical turn.
+        self.smart_turn_evaluations = []
+        self.pending_smart_turn = None
+
     def feed_line(self, raw_line):
         line = raw_line.strip()
 
         if not line:
+            return None
+
+        smart_turn_match = SMART_TURN_DECISION_RE.match(
+            line
+        )
+
+        if smart_turn_match:
+            evaluation = {
+                "turn_id": int(smart_turn_match.group(1)),
+                "candidate_id": int(
+                    smart_turn_match.group(2)
+                ),
+                "segment_count": int(
+                    smart_turn_match.group(3)
+                ),
+                "audio_prep_ms": float(
+                    smart_turn_match.group(4)
+                ),
+                "feature_ms": float(
+                    smart_turn_match.group(5)
+                ),
+                "infer_ms": float(
+                    smart_turn_match.group(6)
+                ),
+                "total_ms": float(
+                    smart_turn_match.group(7)
+                ),
+                "score": float(
+                    smart_turn_match.group(8)
+                ),
+                "decision": smart_turn_match.group(9),
+            }
+
+            if (
+                self.smart_turn_evaluations
+                and self.smart_turn_evaluations[0][
+                    "turn_id"
+                ] != evaluation["turn_id"]
+            ):
+                self.smart_turn_evaluations = []
+
+            self.smart_turn_evaluations.append(
+                evaluation
+            )
+
+            if evaluation["decision"] == "COMPLETE":
+                self.pending_smart_turn = {
+                    "turn_id": evaluation["turn_id"],
+                    "segment_count":
+                        evaluation["segment_count"],
+                    "decision": "COMPLETE",
+                    "score": evaluation["score"],
+                    "audio_prep_ms":
+                        evaluation["audio_prep_ms"],
+                    "feature_ms":
+                        evaluation["feature_ms"],
+                    "infer_ms":
+                        evaluation["infer_ms"],
+                    "total_ms":
+                        evaluation["total_ms"],
+                    "evaluations": list(
+                        self.smart_turn_evaluations
+                    ),
+                }
+
+                self.smart_turn_evaluations = []
+
+            return None
+
+        smart_turn_fallback = (
+            SMART_TURN_FALLBACK_RE.match(line)
+        )
+
+        if smart_turn_fallback:
+            turn_id = int(
+                smart_turn_fallback.group(1)
+            )
+
+            segment_count = int(
+                smart_turn_fallback.group(3)
+            )
+
+            self.smart_turn_evaluations.append({
+                "turn_id": turn_id,
+                "candidate_id": int(
+                    smart_turn_fallback.group(2)
+                ),
+                "segment_count": segment_count,
+                "decision": "ERROR",
+            })
+
+            self.pending_smart_turn = {
+                "turn_id": turn_id,
+                "segment_count": segment_count,
+                "decision": "ERROR",
+                "score": None,
+                "audio_prep_ms": None,
+                "feature_ms": None,
+                "infer_ms": None,
+                "total_ms": None,
+                "evaluations": list(
+                    self.smart_turn_evaluations
+                ),
+            }
+
+            self.smart_turn_evaluations = []
+
             return None
 
         transcript_match = TRANSCRIPT_RE.match(line)
@@ -80,14 +216,102 @@ class SpeechRuntimeParser(object):
 
             t2 = time.perf_counter()
 
-            self.pending_turn = create_transcript_turn(
-                turn_id=self.next_turn_id,
-                runtime_index=runtime_index,
-                text=text,
-                t2=t2,
-            )
+            smart_meta = self.pending_smart_turn
 
-            self.next_turn_id += 1
+            if smart_meta is None:
+                turn_id = self.next_turn_id
+
+                self.pending_turn = create_transcript_turn(
+                    turn_id=turn_id,
+                    runtime_index=runtime_index,
+                    text=text,
+                    t2=t2,
+                )
+
+                self.next_turn_id += 1
+
+            else:
+                turn_id = smart_meta["turn_id"]
+                segment_count = smart_meta[
+                    "segment_count"
+                ]
+
+                completion_source = (
+                    TURN_COMPLETION_SMART_TURN
+                    if smart_meta["decision"]
+                    == "COMPLETE"
+                    else
+                    TURN_COMPLETION_SMART_TURN_FALLBACK
+                )
+
+                self.pending_turn = create_transcript_turn(
+                    turn_id=turn_id,
+                    revision=max(
+                        segment_count - 1,
+                        0,
+                    ),
+                    runtime_index=runtime_index,
+                    text=text,
+                    t2=t2,
+                    turn_id_source=(
+                        TURN_ID_SOURCE_SPEECH_RUNTIME
+                    ),
+                    completion_source=completion_source,
+                    segment_count=segment_count,
+                )
+
+                self.pending_turn[
+                    "smart_turn_complete"
+                ] = (
+                    True
+                    if smart_meta["decision"]
+                    == "COMPLETE"
+                    else None
+                )
+
+                self.pending_turn[
+                    "smart_turn_score"
+                ] = smart_meta["score"]
+
+                infer_ms = smart_meta["infer_ms"]
+                prep_ms = smart_meta["audio_prep_ms"]
+                feature_ms = smart_meta["feature_ms"]
+                total_ms = smart_meta["total_ms"]
+
+                if infer_ms is not None:
+                    self.pending_turn[
+                        "smart_turn_inference_s"
+                    ] = infer_ms / 1000.0
+
+                if prep_ms is not None:
+                    self.pending_turn[
+                        "smart_turn_audio_prep_s"
+                    ] = prep_ms / 1000.0
+
+                if feature_ms is not None:
+                    self.pending_turn[
+                        "smart_turn_feature_s"
+                    ] = feature_ms / 1000.0
+
+                if total_ms is not None:
+                    self.pending_turn[
+                        "smart_turn_total_s"
+                    ] = total_ms / 1000.0
+
+                self.pending_turn[
+                    "smart_turn_decision"
+                ] = smart_meta["decision"]
+
+                self.pending_turn[
+                    "smart_turn_evaluations"
+                ] = smart_meta["evaluations"]
+
+                self.pending_smart_turn = None
+
+                self.next_turn_id = max(
+                    self.next_turn_id,
+                    turn_id + 1,
+                )
 
             return None
 
