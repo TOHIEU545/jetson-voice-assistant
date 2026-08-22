@@ -115,6 +115,37 @@ class ResponseProcessor(threading.Thread):
             "turn_id": turn_id,
             "runtime_index": turn.get("runtime_index"),
 
+            "revision": turn.get("revision"),
+            "segment_count": turn.get("segment_count"),
+            "completion_source": turn.get(
+                "completion_source"
+            ),
+
+            "smart_turn_complete": turn.get(
+                "smart_turn_complete"
+            ),
+            "smart_turn_score": turn.get(
+                "smart_turn_score"
+            ),
+            "smart_turn_inference_s": turn.get(
+                "smart_turn_inference_s"
+            ),
+            "smart_turn_audio_prep_s": turn.get(
+                "smart_turn_audio_prep_s"
+            ),
+            "smart_turn_feature_s": turn.get(
+                "smart_turn_feature_s"
+            ),
+            "smart_turn_total_s": turn.get(
+                "smart_turn_total_s"
+            ),
+            "smart_turn_decision": turn.get(
+                "smart_turn_decision"
+            ),
+            "smart_turn_evaluations": turn.get(
+                "smart_turn_evaluations"
+            ),
+
             "timestamp": datetime.now().isoformat(),
             "transcript": text,
 
@@ -190,6 +221,44 @@ class ResponseProcessor(threading.Thread):
                 full_record["vad_stt_total_s"]
             )
         )
+
+        smart_decision = turn.get(
+            "smart_turn_decision"
+        )
+
+        if smart_decision is not None:
+            smart_score = turn.get(
+                "smart_turn_score"
+            )
+            smart_total = turn.get(
+                "smart_turn_total_s"
+            )
+            segment_count = turn.get(
+                "segment_count"
+            )
+
+            score_text = (
+                "{:.6f}".format(smart_score)
+                if smart_score is not None
+                else "n/a"
+            )
+
+            total_text = (
+                "{:.3f} s".format(smart_total)
+                if smart_total is not None
+                else "n/a"
+            )
+
+            self._console(
+                "[SMART_TURN] decision={} "
+                "score={} total={} "
+                "segments={}\n".format(
+                    smart_decision,
+                    score_text,
+                    total_text,
+                    segment_count,
+                )
+            )
 
         self._console(
             "[LATENCY] Python       T2->T3 : "
