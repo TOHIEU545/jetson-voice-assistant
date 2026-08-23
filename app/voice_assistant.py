@@ -121,6 +121,7 @@ def main():
         valid_turn_queue=valid_turn_queue,
         stop_event=stop_event,
         output_event_queue=llm_output_queue,
+        revision_tracker=revision_tracker,
     )
 
     speech_runtime_handler = SpeechRuntimeHandler(

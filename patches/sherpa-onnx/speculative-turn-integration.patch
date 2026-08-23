@@ -1,0 +1,146 @@
+--- a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
+@@ -396,6 +396,7 @@
+   std::string smart_turn_model;
+   float smart_turn_threshold = 0.5f;
+   int32_t smart_turn_num_threads = 4;
++  int32_t smart_turn_speculative = 0;
+ 
+   vad_config.Register(&po);
+   asr_config.Register(&po);
+@@ -418,6 +419,12 @@
+       "Number of ONNX Runtime intra-op threads "
+       "used by Smart Turn.");
+ 
++  po.Register(
++      "smart-turn-speculative",
++      &smart_turn_speculative,
++      "Run provisional Whisper transcription after an "
++      "INCOMPLETE Smart Turn decision. 0=off, 1=on.");
++
+   po.Read(argc, argv);
+   if (po.NumArgs() != 1) {
+     fprintf(stderr, "Please provide only 1 argument: the device name\n");
+@@ -434,6 +441,10 @@
+   const bool smart_turn_enabled =
+       !smart_turn_model.empty();
+ 
++  const bool smart_turn_speculative_enabled =
++      smart_turn_enabled &&
++      smart_turn_speculative == 1;
++
+   if (enhancement_enabled) {
+     fprintf(stderr, "%s\n", denoiser_config.ToString().c_str());
+   }
+@@ -472,6 +483,16 @@
+           smart_turn_num_threads);
+       return -1;
+     }
++
++    if (smart_turn_speculative != 0 &&
++        smart_turn_speculative != 1) {
++      fprintf(
++          stderr,
++          "Smart Turn speculative must be 0 or 1. "
++          "Given: %d\n",
++          smart_turn_speculative);
++      return -1;
++    }
+   }
+ 
+   fprintf(stderr, "Creating recognizer ...\n");
+@@ -537,6 +558,13 @@
+ 
+     fprintf(
+         stderr,
++        "[SPECULATIVE] state: %s\n",
++        smart_turn_speculative_enabled
++            ? "ON"
++            : "OFF");
++
++    fprintf(
++        stderr,
+         "[SMART_TURN] Creating resident runtime ...\n");
+ 
+     const auto smart_turn_load_start =
+@@ -682,6 +710,8 @@
+       // Smart Turn completeness decision
+       // ------------------------------------------------------
+ 
++      bool keep_held_audio_after_whisper = false;
++
+       if (smart_turn) {
+         SmartTurnResult smart_result;
+ 
+@@ -737,15 +767,23 @@
+               decision);
+ 
+           if (!smart_result.complete) {
+-            held_audio =
+-                std::move(turn_audio);
+-
+             held_root_turn_id =
+                 logical_turn_id;
+ 
+             held_segment_count =
+                 segment_count;
+ 
++            if (smart_turn_speculative_enabled) {
++              // Keep one copy for a future continuation while
++              // letting the current logical revision reach
++              // Whisper immediately.
++              held_audio = turn_audio;
++              keep_held_audio_after_whisper = true;
++            } else {
++              held_audio =
++                  std::move(turn_audio);
++            }
++
+             fprintf(
+                 stderr,
+                 "[SMART_TURN] "
+@@ -757,8 +795,23 @@
+                 held_segment_count,
+                 held_audio.size());
+ 
+-            // Do not run Whisper yet.
+-            continue;
++            if (!smart_turn_speculative_enabled) {
++              // Phase 7C behavior remains unchanged.
++              continue;
++            }
++
++            fprintf(
++                stderr,
++                "[SMART_TURN] "
++                "turn_id=%d "
++                "candidate_id=%d "
++                "segment_count=%d "
++                "revision=%d "
++                "state=PROVISIONAL_TRANSCRIPT\n",
++                logical_turn_id,
++                item.turn_id,
++                segment_count,
++                segment_count - 1);
+           }
+         } else {
+           fprintf(
+@@ -773,10 +826,14 @@
+               segment_count);
+         }
+ 
+-        // COMPLETE or fail-open.
+-        held_audio.clear();
+-        held_root_turn_id = -1;
+-        held_segment_count = 0;
++        // COMPLETE/fail-open clears held state.
++        // An INCOMPLETE speculative revision must keep it for
++        // the continuation that may create revision N+1.
++        if (!keep_held_audio_after_whisper) {
++          held_audio.clear();
++          held_root_turn_id = -1;
++          held_segment_count = 0;
++        }
+       }
+ 
+       // ------------------------------------------------------

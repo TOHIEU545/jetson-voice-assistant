@@ -93,6 +93,26 @@ ENABLE_SMART_TURN = (
     os.environ.get("VOICE_ASSISTANT_SMART_TURN", "0") == "1"
 )
 
+# Phase 8 speculative execution.
+#
+# It is deliberately effective only when Smart Turn is enabled.
+#
+# Default:
+#   SMART_TURN=0 / SPECULATIVE=0
+#
+# Phase 7C compatibility:
+#   SMART_TURN=1 / SPECULATIVE=0
+#
+# Phase 8:
+#   SMART_TURN=1 / SPECULATIVE=1
+ENABLE_SPECULATIVE_TURN = (
+    ENABLE_SMART_TURN
+    and os.environ.get(
+        "VOICE_ASSISTANT_SPECULATIVE",
+        "0",
+    ) == "1"
+)
+
 MIC_DEVICE = "plughw:2,0"
 
 
@@ -131,6 +151,11 @@ def build_speech_command():
             "--smart-turn-num-threads="
             + str(SMART_TURN_NUM_THREADS),
         ])
+
+    if ENABLE_SPECULATIVE_TURN:
+        command.append(
+            "--smart-turn-speculative=1"
+        )
 
     command.append(MIC_DEVICE)
 

@@ -48,6 +48,7 @@ class TranscriptGateHandler(threading.Thread):
         valid_turn_queue,
         stop_event,
         output_event_queue=None,
+        revision_tracker=None,
         name="TranscriptGateHandler",
     ):
         threading.Thread.__init__(self, name=name)
@@ -56,6 +57,7 @@ class TranscriptGateHandler(threading.Thread):
         self.valid_turn_queue = valid_turn_queue
         self.stop_event = stop_event
         self.output_event_queue = output_event_queue
+        self.revision_tracker = revision_tracker
 
         self.error = None
 
@@ -113,6 +115,19 @@ class TranscriptGateHandler(threading.Thread):
                         continue
 
                     self.accepted_count += 1
+
+                    # Phase 8B:
+                    # Publish an accepted revision before it waits
+                    # in valid_turn_queue. A generation for an older
+                    # revision can therefore become stale immediately.
+                    if self.revision_tracker is not None:
+                        self.revision_tracker.observe(
+                            turn_id=turn["turn_id"],
+                            revision=turn.get(
+                                "revision",
+                                0,
+                            ),
+                        )
 
                     turn["valid_turn_queue_enter"] = (
                         time.perf_counter()

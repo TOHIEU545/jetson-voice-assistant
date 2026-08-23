@@ -13,6 +13,7 @@ TURN_ID_SOURCE_SPEECH_RUNTIME = "speech_runtime"
 TURN_COMPLETION_LEGACY_VAD = "legacy_vad"
 TURN_COMPLETION_SMART_TURN = "smart_turn"
 TURN_COMPLETION_SMART_TURN_FALLBACK = "smart_turn_fallback"
+TURN_COMPLETION_SMART_TURN_SPECULATIVE = "smart_turn_speculative"
 
 VALID_TURN_STATES = (
     TURN_STATE_OPEN,
@@ -129,6 +130,24 @@ def turn_revision_key(turn):
     )
 
 
+def is_ready_transcript_turn(turn):
+    """
+    A transcript is dispatchable once all speech latency
+    fields have arrived.
+
+    Phase 8 speculative turns may be dispatched while their
+    lifecycle state is still waiting_continuation.
+    """
+    if turn is None:
+        return False
+
+    return (
+        turn.get("vad_s") is not None
+        and turn.get("stt_s") is not None
+        and turn.get("vad_stt_total_s") is not None
+    )
+
+
 def is_complete_transcript_turn(turn):
     if turn is None:
         return False
@@ -140,7 +159,5 @@ def is_complete_transcript_turn(turn):
 
     return (
         turn_state == TURN_STATE_COMPLETE
-        and turn.get("vad_s") is not None
-        and turn.get("stt_s") is not None
-        and turn.get("vad_stt_total_s") is not None
+        and is_ready_transcript_turn(turn)
     )

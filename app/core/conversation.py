@@ -147,7 +147,7 @@ class ConversationManager(object):
                 self.current_turn["revision"]
             )
 
-            self._turns.append({
+            committed_turn = {
                 "turn_id": turn_id,
                 "revision": active_revision,
                 "user": {
@@ -159,7 +159,37 @@ class ConversationManager(object):
                     "content": assistant_text,
                 },
                 "committed_at": now,
-            })
+            }
+
+            replace_index = None
+
+            for index, existing in enumerate(
+                self._turns
+            ):
+                if existing["turn_id"] != turn_id:
+                    continue
+
+                existing_revision = existing.get(
+                    "revision",
+                    0,
+                )
+
+                if active_revision < existing_revision:
+                    raise RuntimeError(
+                        "cannot commit stale revision"
+                    )
+
+                replace_index = index
+                break
+
+            if replace_index is None:
+                self._turns.append(
+                    committed_turn
+                )
+            else:
+                self._turns[
+                    replace_index
+                ] = committed_turn
 
             if self.max_turns == 0:
                 self._turns = []
