@@ -1,0 +1,38 @@
+--- a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
+@@ -613,6 +613,10 @@
+   // existing T0 -> T1 latency also includes enhancement buffering.
+   int64_t total_samples = 0;
+ 
++  // Phase 9B: realtime barge-in event state.
++  // Emit once when VAD transitions into detected speech.
++  bool speech_started = false;
++
+   struct SpeechSegment {
+     int32_t turn_id;
+     std::vector<float> samples;
+@@ -911,6 +915,14 @@
+       vad->AcceptWaveform(samples.data(), samples.size());
+     }
+ 
++    // Phase 9B: notify Python immediately when speech begins.
++    // This happens before endpoint detection and Whisper.
++    if (!speech_started && vad->IsSpeechDetected()) {
++      speech_started = true;
++      fprintf(stderr, "[SPEECH_STARTED]\n");
++      fflush(stderr);
++    }
++
+     while (!vad->Empty()) {
+       const auto &segment = vad->Front();
+ 
+@@ -944,6 +956,9 @@
+       // Safe only after the queue owns the audio samples.
+       vad->Pop();
+ 
++      // The next detected speech is a new barge-in event.
++      speech_started = false;
++
+       speech_queue_cv.notify_one();
+     }
+   }
