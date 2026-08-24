@@ -113,6 +113,21 @@ ENABLE_SPECULATIVE_TURN = (
     ) == "1"
 )
 
+# Phase 9 barge-in cancellation.
+#
+# Default: ON
+#
+# Enable:
+#   VOICE_ASSISTANT_BARGE_IN=1
+#
+# Disable:
+#   VOICE_ASSISTANT_BARGE_IN=0
+#
+# Keep ON by default to preserve the existing Phase 9 behavior.
+ENABLE_BARGE_IN = (
+    os.environ.get("VOICE_ASSISTANT_BARGE_IN", "1") == "1"
+)
+
 MIC_DEVICE = "plughw:2,0"
 
 

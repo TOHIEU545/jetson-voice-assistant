@@ -473,6 +473,7 @@ class SpeechRuntimeHandler(threading.Thread):
         transcript_queue,
         stop_event,
         cancellation_controller=None,
+        enable_barge_in=True,
         name="SpeechRuntimeHandler",
     ):
         threading.Thread.__init__(self, name=name)
@@ -484,6 +485,7 @@ class SpeechRuntimeHandler(threading.Thread):
         self.cancellation_controller = (
             cancellation_controller
         )
+        self.enable_barge_in = enable_barge_in
 
         self.process = None
         self.parser = SpeechRuntimeParser()
@@ -508,7 +510,10 @@ class SpeechRuntimeHandler(threading.Thread):
 
         self.speech_started_count += 1
 
-        if self.cancellation_controller is not None:
+        if (
+            self.enable_barge_in
+            and self.cancellation_controller is not None
+        ):
             self.last_interruption = (
                 self.cancellation_controller.cancel_active(
                     reason="barge_in"

@@ -245,12 +245,33 @@ def main():
 
     assert idle_result is None
 
+    # BARGE-IN OFF:
+    # speech_started vẫn được consume nhưng không được
+    # cancel generation.
+    disabled_runtime = SpeechRuntimeHandler(
+        command=[],
+        transcript_queue=queue.Queue(),
+        stop_event=stop_event,
+        cancellation_controller=cancellation_controller,
+        enable_barge_in=False,
+    )
+
+    consumed = disabled_runtime._handle_runtime_event_line(
+        "[SPEECH_STARTED]"
+    )
+
+    assert consumed is True
+    assert disabled_runtime.speech_started_count == 1
+    assert disabled_runtime.last_interruption is None
+    assert cancellation_controller.active_snapshot() is None
+
     print("PASS: Phase 9 barge-in infrastructure")
     print("speech_started bridge: PASS")
     print("active LLM cancellation: PASS")
     print("history protection: PASS")
     print("cancellation scope cleanup: PASS")
     print("idle speech event safety: PASS")
+    print("barge-in feature flag OFF: PASS")
     print(
         "cancel detection ms:",
         cancelled["cancel_detection_ms"],

@@ -7,6 +7,8 @@ import threading
 from config import (
     ENABLE_GTCRN,
     ENABLE_SMART_TURN,
+    ENABLE_SPECULATIVE_TURN,
+    ENABLE_BARGE_IN,
     INITIAL_HISTORY,
     LLM_MODE,
     LLM_BASE_URL,
@@ -36,14 +38,20 @@ def build_banner(session_paths):
     smart_turn_state = (
         "ON" if ENABLE_SMART_TURN else "OFF"
     )
+    speculative_state = (
+        "ON" if ENABLE_SPECULATIVE_TURN else "OFF"
+    )
+    barge_in_state = "ON" if ENABLE_BARGE_IN else "OFF"
 
     return (
         "===================================\n"
         " Jetson Voice Assistant\n"
         " Mic -> VAD -> [Smart Turn] -> Whisper -> LLM\n"
-        " [FEATURE] GTCRN      : {}\n"
-        " [FEATURE] SMART TURN : {}\n"
-        " Conversation history: ON\n"
+        " [FEATURE] GTCRN       : {}\n"
+        " [FEATURE] SMART TURN  : {}\n"
+        " [FEATURE] SPECULATIVE : {}\n"
+        " [FEATURE] BARGE-IN    : {}\n"
+        " Conversation history : ON\n"
         "===================================\n"
         "Project: {}\n"
         "Log: {}\n"
@@ -54,6 +62,8 @@ def build_banner(session_paths):
     ).format(
         gtcrn_state,
         smart_turn_state,
+        speculative_state,
+        barge_in_state,
         PROJECT_ROOT,
         session_paths["conversation_log"],
         session_paths["benchmark_log"],
@@ -129,6 +139,7 @@ def main():
         transcript_queue=transcript_queue,
         stop_event=stop_event,
         cancellation_controller=cancellation_controller,
+        enable_barge_in=ENABLE_BARGE_IN,
     )
 
     # Start downstream first so every producer already has
