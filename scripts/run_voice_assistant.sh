@@ -6,6 +6,12 @@ set -euo pipefail
 # Edit this block on the Jetson before running.
 # ============================================================
 
+# STT backend:
+#   whisper
+#   zipformer_20m
+#   zipformer_2023_06_21
+VOICE_ASSISTANT_STT="whisper"
+
 # Speech features: 1 = ON, 0 = OFF
 VOICE_ASSISTANT_GTCRN=0
 VOICE_ASSISTANT_SMART_TURN=0
@@ -48,6 +54,16 @@ validate_toggle "VOICE_ASSISTANT_SMART_TURN" "$VOICE_ASSISTANT_SMART_TURN"
 validate_toggle "VOICE_ASSISTANT_SPECULATIVE" "$VOICE_ASSISTANT_SPECULATIVE"
 validate_toggle "VOICE_ASSISTANT_BARGE_IN" "$VOICE_ASSISTANT_BARGE_IN"
 
+case "$VOICE_ASSISTANT_STT" in
+    whisper|zipformer_20m|zipformer_2023_06_21)
+        ;;
+    *)
+        echo "ERROR: Unsupported VOICE_ASSISTANT_STT: $VOICE_ASSISTANT_STT"
+        echo "Supported: whisper, zipformer_20m, zipformer_2023_06_21"
+        exit 1
+        ;;
+esac
+
 if [[ "$VOICE_ASSISTANT_SPECULATIVE" == "1" && "$VOICE_ASSISTANT_SMART_TURN" != "1" ]]; then
     echo "ERROR: VOICE_ASSISTANT_SPECULATIVE=1 requires VOICE_ASSISTANT_SMART_TURN=1"
     exit 1
@@ -65,6 +81,7 @@ if [[ "$LLM_MODE" == "remote" ]]; then
     fi
 fi
 
+export VOICE_ASSISTANT_STT
 export VOICE_ASSISTANT_GTCRN
 export VOICE_ASSISTANT_SMART_TURN
 export VOICE_ASSISTANT_SPECULATIVE
@@ -90,6 +107,7 @@ fi
 echo "=========================================="
 echo " Jetson Voice Assistant Runtime Config"
 echo "=========================================="
+echo "STT BACKEND : ${VOICE_ASSISTANT_STT}"
 echo "GTCRN       : ${VOICE_ASSISTANT_GTCRN}"
 echo "SMART TURN  : ${VOICE_ASSISTANT_SMART_TURN}"
 echo "SPECULATIVE : ${VOICE_ASSISTANT_SPECULATIVE}"

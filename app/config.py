@@ -12,13 +12,22 @@ PROJECT_ROOT = os.path.dirname(APP_DIR)
 # Speech runtime
 # ============================================================
 
-SHERPA_BIN = os.path.join(
+WHISPER_SHERPA_BIN = os.path.join(
     PROJECT_ROOT,
     "runtime",
     "sherpa-onnx",
     "build",
     "bin",
     "sherpa-onnx-vad-alsa-offline-asr",
+)
+
+STREAMING_SHERPA_BIN = os.path.join(
+    PROJECT_ROOT,
+    "runtime",
+    "sherpa-onnx",
+    "build",
+    "bin",
+    "sherpa-onnx-vad-alsa-streaming-asr",
 )
 
 VAD_MODEL = os.path.join(
@@ -48,6 +57,44 @@ WHISPER_DECODER = os.path.join(
 WHISPER_TOKENS = os.path.join(
     WHISPER_DIR,
     "tiny.en-tokens.txt",
+)
+
+
+# ============================================================
+# STT BACKEND
+# ============================================================
+
+STT_BACKEND = os.environ.get(
+    "VOICE_ASSISTANT_STT",
+    "whisper",
+).strip().lower()
+
+SUPPORTED_STT_BACKENDS = (
+    "whisper",
+    "zipformer_20m",
+    "zipformer_2023_06_21",
+)
+
+if STT_BACKEND not in SUPPORTED_STT_BACKENDS:
+    raise RuntimeError(
+        "Unsupported VOICE_ASSISTANT_STT={!r}. Supported: {}".format(
+            STT_BACKEND,
+            ", ".join(SUPPORTED_STT_BACKENDS),
+        )
+    )
+
+ZIPFORMER_20M_DIR = os.path.join(
+    PROJECT_ROOT,
+    "models",
+    "stt",
+    "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+)
+
+ZIPFORMER_2023_06_21_DIR = os.path.join(
+    PROJECT_ROOT,
+    "models",
+    "stt",
+    "sherpa-onnx-streaming-zipformer-en-2023-06-21",
 )
 
 GTCRN_MODEL = os.path.join(
@@ -135,26 +182,75 @@ MIC_DEVICE = os.environ.get(
 
 
 def build_speech_command():
-    command = [
-        SHERPA_BIN,
+    """Build the C++ speech runtime command for the selected STT backend."""
 
-        "--silero-vad-model=" + VAD_MODEL,
+    # Current Smart Turn / Speculative integration belongs to
+    # the Whisper offline runtime only.
+    if STT_BACKEND != "whisper" and ENABLE_SMART_TURN:
+        raise RuntimeError(
+            "Smart Turn is currently supported only "
+            "with VOICE_ASSISTANT_STT=whisper"
+        )
 
-        "--whisper-encoder=" + WHISPER_ENCODER,
-        "--whisper-decoder=" + WHISPER_DECODER,
-        "--tokens=" + WHISPER_TOKENS,
+    if STT_BACKEND == "whisper":
+        command = [
+            WHISPER_SHERPA_BIN,
 
-        "--model-type=whisper",
+            "--silero-vad-model=" + VAD_MODEL,
 
-        "--provider=cpu",
-        "--vad-provider=cpu",
+            "--whisper-encoder=" + WHISPER_ENCODER,
+            "--whisper-decoder=" + WHISPER_DECODER,
+            "--tokens=" + WHISPER_TOKENS,
 
-        "--num-threads=2",
-        "--vad-num-threads=1",
+            "--model-type=whisper",
 
-        "--silero-vad-threshold=0.5",
-        "--silero-vad-max-speech-duration=60",
-    ]
+            "--provider=cpu",
+            "--vad-provider=cpu",
+
+            "--num-threads=2",
+            "--vad-num-threads=1",
+
+            "--silero-vad-threshold=0.5",
+            "--silero-vad-max-speech-duration=60",
+        ]
+
+    else:
+        if STT_BACKEND == "zipformer_20m":
+            model_dir = ZIPFORMER_20M_DIR
+        else:
+            model_dir = ZIPFORMER_2023_06_21_DIR
+
+        command = [
+            STREAMING_SHERPA_BIN,
+
+            "--silero-vad-model=" + VAD_MODEL,
+
+            "--tokens=" + os.path.join(
+                model_dir,
+                "tokens.txt",
+            ),
+            "--encoder=" + os.path.join(
+                model_dir,
+                "encoder-epoch-99-avg-1.onnx",
+            ),
+            "--decoder=" + os.path.join(
+                model_dir,
+                "decoder-epoch-99-avg-1.onnx",
+            ),
+            "--joiner=" + os.path.join(
+                model_dir,
+                "joiner-epoch-99-avg-1.onnx",
+            ),
+
+            "--provider=cpu",
+            "--vad-provider=cpu",
+
+            "--num-threads=2",
+            "--vad-num-threads=1",
+
+            "--silero-vad-threshold=0.5",
+            "--silero-vad-max-speech-duration=60",
+        ]
 
     if ENABLE_GTCRN:
         command.append(

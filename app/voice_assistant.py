@@ -5,6 +5,7 @@ import signal
 import threading
 
 from config import (
+    STT_BACKEND,
     ENABLE_GTCRN,
     ENABLE_SMART_TURN,
     ENABLE_SPECULATIVE_TURN,
@@ -46,7 +47,8 @@ def build_banner(session_paths):
     return (
         "===================================\n"
         " Jetson Voice Assistant\n"
-        " Mic -> VAD -> [Smart Turn] -> Whisper -> LLM\n"
+        " Mic -> VAD / STT -> LLM\n"
+        " [BACKEND] STT         : {}\n"
         " [FEATURE] GTCRN       : {}\n"
         " [FEATURE] SMART TURN  : {}\n"
         " [FEATURE] SPECULATIVE : {}\n"
@@ -60,6 +62,7 @@ def build_banner(session_paths):
         "\n"
         "Speak...\n\n"
     ).format(
+        STT_BACKEND,
         gtcrn_state,
         smart_turn_state,
         speculative_state,

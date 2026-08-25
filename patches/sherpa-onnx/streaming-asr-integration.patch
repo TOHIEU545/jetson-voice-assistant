@@ -1,0 +1,611 @@
+diff --git a/sherpa-onnx/csrc/CMakeLists.txt b/sherpa-onnx/csrc/CMakeLists.txt
+index fc0f37a4..4026abaa 100755
+--- a/sherpa-onnx/csrc/CMakeLists.txt
++++ b/sherpa-onnx/csrc/CMakeLists.txt
+@@ -600,6 +600,7 @@ if(SHERPA_ONNX_HAS_ALSA AND SHERPA_ONNX_ENABLE_BINARY)
+   add_executable(sherpa-onnx-keyword-spotter-alsa sherpa-onnx-keyword-spotter-alsa.cc alsa.cc)
+   add_executable(sherpa-onnx-vad-alsa sherpa-onnx-vad-alsa.cc alsa.cc)
+   add_executable(sherpa-onnx-vad-alsa-offline-asr sherpa-onnx-vad-alsa-offline-asr.cc alsa.cc)
++  add_executable(sherpa-onnx-vad-alsa-streaming-asr sherpa-onnx-vad-alsa-streaming-asr.cc alsa.cc)
+ 
+   if(SHERPA_ONNX_ENABLE_TTS)
+     add_executable(sherpa-onnx-offline-tts-play-alsa sherpa-onnx-offline-tts-play-alsa.cc alsa-play.cc)
+@@ -612,6 +613,7 @@ if(SHERPA_ONNX_HAS_ALSA AND SHERPA_ONNX_ENABLE_BINARY)
+     sherpa-onnx-keyword-spotter-alsa
+     sherpa-onnx-vad-alsa
+     sherpa-onnx-vad-alsa-offline-asr
++    sherpa-onnx-vad-alsa-streaming-asr
+     sherpa-onnx-alsa-offline-audio-tagging
+   )
+ 
+diff --git a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-streaming-asr.cc b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-streaming-asr.cc
+new file mode 100644
+index 00000000..401263fd
+--- /dev/null
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-streaming-asr.cc
+@@ -0,0 +1,585 @@
++// sherpa-onnx/csrc/sherpa-onnx-vad-alsa-streaming-asr.cc
++//
++// Streaming runtime for jetson-voice-assistant.
++//
++// Architecture:
++//
++//                         +--> Silero VAD
++//                         |
++// ALSA -> frontend PCM ---+
++//                         |
++//                         +--> PCM queue
++//                                |
++//                                v
++//                         Streaming STT worker
++//                                |
++//                         OnlineRecognizer
++//
++// Output contract:
++//
++//   [SPEECH_STARTED]
++//    0: FINAL TRANSCRIPT
++//   [LATENCY] VAD   : x.xxx s
++//   [LATENCY] STT   : x.xxx s
++//   [LATENCY] TOTAL : x.xxx s
++
++#include <signal.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include <chrono>
++#include <condition_variable>
++#include <cstdint>
++#include <memory>
++#include <mutex>
++#include <queue>
++#include <string>
++#include <thread>
++#include <utility>
++#include <vector>
++
++#include "sherpa-onnx/csrc/alsa.h"
++#include "sherpa-onnx/csrc/macros.h"
++#include "sherpa-onnx/csrc/online-recognizer.h"
++#include "sherpa-onnx/csrc/online-speech-denoiser.h"
++#include "sherpa-onnx/csrc/parse-options.h"
++#include "sherpa-onnx/csrc/voice-activity-detector.h"
++
++namespace {
++
++volatile sig_atomic_t stop = 0;
++
++void Handler(int32_t sig) {
++  (void)sig;
++  stop = 1;
++}
++
++enum class StreamItemType {
++  kAudio,
++  kTurnEnd,
++};
++
++struct StreamItem {
++  StreamItemType type = StreamItemType::kAudio;
++
++  std::vector<float> samples;
++
++  int32_t turn_id = -1;
++  double vad_latency = 0.0;
++
++  std::chrono::steady_clock::time_point ready_time;
++};
++
++}  // namespace
++
++int32_t main(int32_t argc, char *argv[]) {
++  signal(SIGINT, Handler);
++
++  const char *kUsageMessage = R"usage(
++Streaming VAD + online ASR runtime.
++
++Example:
++
++  ./sherpa-onnx-vad-alsa-streaming-asr \
++    --silero-vad-model=/path/to/silero_vad.onnx \
++    --tokens=/path/to/tokens.txt \
++    --encoder=/path/to/encoder.onnx \
++    --decoder=/path/to/decoder.onnx \
++    --joiner=/path/to/joiner.onnx \
++    --provider=cpu \
++    --num-threads=2 \
++    plughw:2,0
++)usage";
++
++  sherpa_onnx::ParseOptions po(kUsageMessage);
++
++  sherpa_onnx::VadModelConfig vad_config;
++  sherpa_onnx::OnlineRecognizerConfig asr_config;
++  sherpa_onnx::OnlineSpeechDenoiserConfig denoiser_config;
++
++  vad_config.Register(&po);
++  asr_config.Register(&po);
++  denoiser_config.model.gtcrn.Register(&po);
++
++  po.Read(argc, argv);
++
++  if (po.NumArgs() != 1) {
++    fprintf(
++        stderr,
++        "Please provide only 1 argument: the device name\n");
++
++    po.PrintUsage();
++    SHERPA_ONNX_EXIT(EXIT_FAILURE);
++  }
++
++  fprintf(
++      stderr,
++      "%s\n",
++      vad_config.ToString().c_str());
++
++  fprintf(
++      stderr,
++      "%s\n",
++      asr_config.ToString().c_str());
++
++  const bool enhancement_enabled =
++      !denoiser_config.model.gtcrn.model.empty();
++
++  if (enhancement_enabled) {
++    fprintf(
++        stderr,
++        "%s\n",
++        denoiser_config.ToString().c_str());
++  }
++
++  if (!vad_config.Validate()) {
++    fprintf(stderr, "Errors in vad_config!\n");
++    return -1;
++  }
++
++  if (!asr_config.Validate()) {
++    fprintf(stderr, "Errors in asr_config!\n");
++    return -1;
++  }
++
++  if (enhancement_enabled &&
++      !denoiser_config.Validate()) {
++    fprintf(stderr, "Errors in denoiser_config!\n");
++    return -1;
++  }
++
++  const int32_t sample_rate =
++      asr_config.feat_config.sampling_rate;
++
++  if (sample_rate != 16000) {
++    fprintf(
++        stderr,
++        "Streaming runtime requires 16000 Hz. Given: %d\n",
++        sample_rate);
++
++    return -1;
++  }
++
++  // ==========================================================
++  // Online recognizer
++  // ==========================================================
++
++  fprintf(
++      stderr,
++      "Creating online recognizer ...\n");
++
++  sherpa_onnx::OnlineRecognizer recognizer(
++      asr_config);
++
++  fprintf(
++      stderr,
++      "Online recognizer created!\n");
++
++  // ==========================================================
++  // ALSA
++  // ==========================================================
++
++  std::string device_name = po.GetArg(1);
++
++  sherpa_onnx::Alsa alsa(
++      device_name.c_str());
++
++  fprintf(
++      stderr,
++      "Use recording device: %s\n",
++      device_name.c_str());
++
++  if (alsa.GetExpectedSampleRate() != sample_rate) {
++    fprintf(
++        stderr,
++        "sample rate: %d != %d\n",
++        alsa.GetExpectedSampleRate(),
++        sample_rate);
++
++    SHERPA_ONNX_EXIT(-1);
++  }
++
++  // ==========================================================
++  // VAD
++  // ==========================================================
++
++  auto vad =
++      std::make_unique<
++          sherpa_onnx::VoiceActivityDetector>(
++          vad_config);
++
++  // ==========================================================
++  // Optional GTCRN
++  // ==========================================================
++
++  std::unique_ptr<
++      sherpa_onnx::OnlineSpeechDenoiser>
++      denoiser;
++
++  if (enhancement_enabled) {
++    fprintf(
++        stderr,
++        "[ENHANCEMENT] GTCRN: ON\n");
++
++    denoiser =
++        std::make_unique<
++            sherpa_onnx::OnlineSpeechDenoiser>(
++            denoiser_config);
++
++    if (denoiser->GetSampleRate() != sample_rate) {
++      fprintf(
++          stderr,
++          "[ENHANCEMENT] sample rate: %d != %d\n",
++          denoiser->GetSampleRate(),
++          sample_rate);
++
++      SHERPA_ONNX_EXIT(-1);
++    }
++
++    fprintf(
++        stderr,
++        "[ENHANCEMENT] Frame shift: %d samples\n",
++        denoiser->GetFrameShiftInSamples());
++
++  } else {
++    fprintf(
++        stderr,
++        "[ENHANCEMENT] GTCRN: OFF\n");
++  }
++
++  // ==========================================================
++  // Producer -> STT worker queue
++  // ==========================================================
++
++  std::queue<StreamItem> stream_queue;
++
++  std::mutex stream_queue_mutex;
++
++  std::condition_variable stream_queue_cv;
++
++  bool producer_done = false;
++
++  int32_t next_turn_id = 0;
++
++  // ==========================================================
++  // Streaming STT worker
++  //
++  // DecodeStream() is ONLY executed here.
++  // ALSA/VAD producer never performs STT inference.
++  // ==========================================================
++
++  std::thread stt_worker([&]() {
++    auto stream =
++        recognizer.CreateStream();
++
++    int32_t transcript_index = 0;
++
++    while (true) {
++      StreamItem item;
++
++      {
++        std::unique_lock<std::mutex> lock(
++            stream_queue_mutex);
++
++        stream_queue_cv.wait(
++            lock,
++            [&]() {
++              return producer_done ||
++                     !stream_queue.empty();
++            });
++
++        if (stream_queue.empty()) {
++          if (producer_done) {
++            break;
++          }
++
++          continue;
++        }
++
++        item =
++            std::move(
++                stream_queue.front());
++
++        stream_queue.pop();
++      }
++
++      // ------------------------------------------------------
++      // PCM item
++      // ------------------------------------------------------
++
++      if (item.type ==
++          StreamItemType::kAudio) {
++        if (item.samples.empty()) {
++          continue;
++        }
++
++        stream->AcceptWaveform(
++            sample_rate,
++            item.samples.data(),
++            item.samples.size());
++
++        while (
++            recognizer.IsReady(
++                stream.get())) {
++          recognizer.DecodeStream(
++              stream.get());
++        }
++
++        continue;
++      }
++
++      // ------------------------------------------------------
++      // TURN END marker
++      //
++      // FIFO guarantees all PCM before the endpoint marker
++      // has already reached OnlineRecognizer.
++      // ------------------------------------------------------
++
++      while (
++          recognizer.IsReady(
++              stream.get())) {
++        recognizer.DecodeStream(
++            stream.get());
++      }
++
++      auto result =
++          recognizer.GetResult(
++              stream.get());
++
++      const auto transcript_ready_time =
++          std::chrono::steady_clock::now();
++
++      // T1 -> T2:
++      // VAD endpoint ready -> final transcript available.
++      //
++      // Queue backlog is intentionally included here.
++      const double stt_latency =
++          std::chrono::duration<double>(
++              transcript_ready_time -
++              item.ready_time)
++              .count();
++
++      // T0 -> T2:
++      // speech end -> final transcript.
++      const double total_latency =
++          item.vad_latency +
++          stt_latency;
++
++      if (!result.text.empty()) {
++        fprintf(
++            stderr,
++            "%2d: %s\n",
++            transcript_index,
++            result.text.c_str());
++
++        fprintf(
++            stderr,
++            "[LATENCY] VAD   : %.3f s\n"
++            "[LATENCY] STT   : %.3f s\n"
++            "[LATENCY] TOTAL : %.3f s\n",
++            item.vad_latency,
++            stt_latency,
++            total_latency);
++
++        fflush(stderr);
++
++        ++transcript_index;
++
++      } else {
++        fprintf(
++            stderr,
++            "[STREAMING_STT] "
++            "turn_id=%d empty transcript\n",
++            item.turn_id);
++      }
++
++      // New ASR stream state for next conversational turn.
++      recognizer.Reset(
++          stream.get());
++    }
++  });
++
++  fprintf(
++      stderr,
++      "[STT] backend: STREAMING\n");
++
++  fprintf(
++      stderr,
++      "[STT] worker: ON\n");
++
++  fprintf(
++      stderr,
++      "Started. Please speak\n");
++
++  const int32_t window_size =
++      vad_config.silero_vad.window_size;
++
++  // Raw microphone sample timeline.
++  int64_t total_samples = 0;
++
++  bool speech_started = false;
++
++  // ==========================================================
++  // ALSA + VAD producer
++  // ==========================================================
++
++  while (!stop) {
++    const std::vector<float> &raw_samples =
++        alsa.Read(window_size);
++
++    total_samples +=
++        static_cast<int64_t>(
++            raw_samples.size());
++
++    std::vector<float> frontend_samples;
++
++    // --------------------------------------------------------
++    // Optional frontend enhancement
++    // --------------------------------------------------------
++
++    if (denoiser) {
++      auto enhanced =
++          denoiser->Run(
++              raw_samples.data(),
++              raw_samples.size(),
++              sample_rate);
++
++      if (!enhanced.samples.empty()) {
++        frontend_samples =
++            std::move(
++                enhanced.samples);
++      }
++
++    } else {
++      frontend_samples =
++          raw_samples;
++    }
++
++    // --------------------------------------------------------
++    // Feed SAME PCM to:
++    //
++    // 1. VAD
++    // 2. Streaming STT queue
++    // --------------------------------------------------------
++
++    if (!frontend_samples.empty()) {
++      vad->AcceptWaveform(
++          frontend_samples.data(),
++          frontend_samples.size());
++
++      StreamItem audio_item;
++
++      audio_item.type =
++          StreamItemType::kAudio;
++
++      audio_item.samples =
++          std::move(
++              frontend_samples);
++
++      {
++        std::lock_guard<std::mutex> lock(
++            stream_queue_mutex);
++
++        stream_queue.push(
++            std::move(
++                audio_item));
++      }
++
++      stream_queue_cv.notify_one();
++    }
++
++    // --------------------------------------------------------
++    // Realtime speech-start event
++    // --------------------------------------------------------
++
++    if (!speech_started &&
++        vad->IsSpeechDetected()) {
++      speech_started = true;
++
++      fprintf(
++          stderr,
++          "[SPEECH_STARTED]\n");
++
++      fflush(stderr);
++    }
++
++    // --------------------------------------------------------
++    // VAD endpoint
++    // --------------------------------------------------------
++
++    while (!vad->Empty()) {
++      const auto &segment =
++          vad->Front();
++
++      // T1: VAD completed the segment.
++      const auto ready_time =
++          std::chrono::steady_clock::now();
++
++      // T0: actual speech-end position.
++      const int64_t speech_end_sample =
++          static_cast<int64_t>(
++              segment.start) +
++          static_cast<int64_t>(
++              segment.samples.size());
++
++      // T0 -> T1
++      const double vad_latency =
++          static_cast<double>(
++              total_samples -
++              speech_end_sample) /
++          static_cast<double>(
++              sample_rate);
++
++      // TURN END marker goes after all PCM already queued.
++      StreamItem end_item;
++
++      end_item.type =
++          StreamItemType::kTurnEnd;
++
++      end_item.turn_id =
++          next_turn_id++;
++
++      end_item.vad_latency =
++          vad_latency;
++
++      end_item.ready_time =
++          ready_time;
++
++      {
++        std::lock_guard<std::mutex> lock(
++            stream_queue_mutex);
++
++        stream_queue.push(
++            std::move(
++                end_item));
++      }
++
++      stream_queue_cv.notify_one();
++
++      vad->Pop();
++
++      speech_started = false;
++    }
++  }
++
++  fprintf(
++      stderr,
++      "\nCaught Ctrl + C. Exiting...\n");
++
++  // ==========================================================
++  // Graceful shutdown
++  // ==========================================================
++
++  {
++    std::lock_guard<std::mutex> lock(
++        stream_queue_mutex);
++
++    producer_done = true;
++  }
++
++  stream_queue_cv.notify_all();
++
++  stt_worker.join();
++
++  return 0;
++}
