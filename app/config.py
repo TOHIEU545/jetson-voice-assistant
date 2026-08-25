@@ -128,7 +128,10 @@ ENABLE_BARGE_IN = (
     os.environ.get("VOICE_ASSISTANT_BARGE_IN", "1") == "1"
 )
 
-MIC_DEVICE = "plughw:2,0"
+MIC_DEVICE = os.environ.get(
+    "VOICE_ASSISTANT_MIC_DEVICE",
+    "plughw:2,0",
+).strip()
 
 
 def build_speech_command():
@@ -186,20 +189,43 @@ LLM_MODE = os.environ.get(
     "local",
 ).strip().lower()
 
-LLM_BASE_URL = os.environ.get(
-    "LLM_BASE_URL",
-    "http://127.0.0.1:8080/v1/chat/completions",
-).strip()
+if LLM_MODE == "remote":
+    remote_llm_url = os.environ.get(
+        "REMOTE_LLM_URL",
+        "",
+    ).strip().rstrip("/")
 
-LLM_MODEL = os.environ.get(
-    "LLM_MODEL",
-    "",
-).strip() or None
+    if not remote_llm_url:
+        raise RuntimeError(
+            "REMOTE_LLM_URL is required when LLM_MODE=remote"
+        )
 
-LLM_API_KEY = os.environ.get(
-    "LLM_API_KEY",
-    "",
-).strip() or None
+    LLM_BASE_URL = (
+        remote_llm_url + "/v1/chat/completions"
+    )
+
+    LLM_MODEL = os.environ.get(
+        "REMOTE_LLM_MODEL",
+        "",
+    ).strip() or None
+
+    LLM_API_KEY = os.environ.get(
+        "REMOTE_LLM_API_KEY",
+        "",
+    ).strip() or None
+
+elif LLM_MODE == "local":
+    LLM_BASE_URL = (
+        "http://127.0.0.1:8080/v1/chat/completions"
+    )
+
+    LLM_MODEL = None
+    LLM_API_KEY = None
+
+else:
+    raise RuntimeError(
+        "LLM_MODE must be 'local' or 'remote'"
+    )
 
 # Backward-compatible alias for older benchmark tools.
 LLM_URL = LLM_BASE_URL

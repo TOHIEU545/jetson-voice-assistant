@@ -6,11 +6,14 @@ set -euo pipefail
 # Edit this block on the Jetson before running.
 # ============================================================
 
-# Speech feature models: 1 = ON, 0 = OFF
+# Speech features: 1 = ON, 0 = OFF
 VOICE_ASSISTANT_GTCRN=0
 VOICE_ASSISTANT_SMART_TURN=0
 VOICE_ASSISTANT_SPECULATIVE=0
 VOICE_ASSISTANT_BARGE_IN=1
+
+# Hardware
+VOICE_ASSISTANT_MIC_DEVICE="plughw:2,0"
 
 # LLM backend: local | remote
 LLM_MODE="local"
@@ -23,14 +26,12 @@ REMOTE_LLM_MODEL="ministral-3:8b"
 REMOTE_LLM_API_KEY=""
 
 # ============================================================
-# INTERNAL CONFIG
+# INTERNAL
 # Normally do not edit below this line.
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-LOCAL_LLM_BASE_URL="http://127.0.0.1:8080/v1/chat/completions"
 
 validate_toggle() {
     local name="$1"
@@ -52,51 +53,38 @@ if [[ "$VOICE_ASSISTANT_SPECULATIVE" == "1" && "$VOICE_ASSISTANT_SMART_TURN" != 
     exit 1
 fi
 
+if [[ "$LLM_MODE" != "local" && "$LLM_MODE" != "remote" ]]; then
+    echo "ERROR: LLM_MODE must be 'local' or 'remote' (current: $LLM_MODE)"
+    exit 1
+fi
+
+if [[ "$LLM_MODE" == "remote" ]]; then
+    if [[ -z "$REMOTE_LLM_URL" || "$REMOTE_LLM_URL" == "https://xxxxx.trycloudflare.com" ]]; then
+        echo "ERROR: Set REMOTE_LLM_URL before using LLM_MODE=remote"
+        exit 1
+    fi
+fi
+
 export VOICE_ASSISTANT_GTCRN
 export VOICE_ASSISTANT_SMART_TURN
 export VOICE_ASSISTANT_SPECULATIVE
 export VOICE_ASSISTANT_BARGE_IN
+export VOICE_ASSISTANT_MIC_DEVICE
 
-case "$LLM_MODE" in
-    local)
-        export LLM_MODE="local"
-        export LLM_BASE_URL="$LOCAL_LLM_BASE_URL"
-        unset LLM_MODEL
-        unset LLM_API_KEY
-        ;;
+export LLM_MODE
 
-    remote)
-        REMOTE_LLM_URL="${REMOTE_LLM_URL%/}"
-
-        if [[ -z "$REMOTE_LLM_URL" || "$REMOTE_LLM_URL" == "https://xxxxx.trycloudflare.com" ]]; then
-            echo "ERROR: Set REMOTE_LLM_URL before using LLM_MODE=remote"
-            exit 1
-        fi
-
-        export LLM_MODE="remote"
-        export LLM_BASE_URL="${REMOTE_LLM_URL}/v1/chat/completions"
-
-        if [[ -n "$REMOTE_LLM_MODEL" ]]; then
-            export LLM_MODEL="$REMOTE_LLM_MODEL"
-        else
-            unset LLM_MODEL
-        fi
-
-        if [[ -n "$REMOTE_LLM_API_KEY" ]]; then
-            export LLM_API_KEY="$REMOTE_LLM_API_KEY"
-        else
-            unset LLM_API_KEY
-        fi
-        ;;
-
-    *)
-        echo "ERROR: LLM_MODE must be 'local' or 'remote' (current: $LLM_MODE)"
-        exit 1
-        ;;
-esac
+if [[ "$LLM_MODE" == "remote" ]]; then
+    export REMOTE_LLM_URL
+    export REMOTE_LLM_MODEL
+    export REMOTE_LLM_API_KEY
+else
+    unset REMOTE_LLM_URL
+    unset REMOTE_LLM_MODEL
+    unset REMOTE_LLM_API_KEY
+fi
 
 # ============================================================
-# SHOW EFFECTIVE CONFIG
+# SHOW USER CONFIG
 # ============================================================
 
 echo "=========================================="
@@ -106,15 +94,17 @@ echo "GTCRN       : ${VOICE_ASSISTANT_GTCRN}"
 echo "SMART TURN  : ${VOICE_ASSISTANT_SMART_TURN}"
 echo "SPECULATIVE : ${VOICE_ASSISTANT_SPECULATIVE}"
 echo "BARGE-IN    : ${VOICE_ASSISTANT_BARGE_IN}"
+echo "MIC DEVICE  : ${VOICE_ASSISTANT_MIC_DEVICE}"
 echo "LLM MODE    : ${LLM_MODE}"
-echo "LLM MODEL   : ${LLM_MODEL:-server-selected}"
-echo "LLM URL     : ${LLM_BASE_URL}"
 
 if [[ "$LLM_MODE" == "remote" ]]; then
-    if [[ -n "${LLM_API_KEY:-}" ]]; then
-        echo "LLM API KEY : configured"
+    echo "REMOTE URL   : ${REMOTE_LLM_URL}"
+    echo "REMOTE MODEL : ${REMOTE_LLM_MODEL:-server-selected}"
+
+    if [[ -n "$REMOTE_LLM_API_KEY" ]]; then
+        echo "API KEY      : configured"
     else
-        echo "LLM API KEY : none"
+        echo "API KEY      : none"
     fi
 fi
 
