@@ -84,6 +84,8 @@ git apply "$PATCH_DIR/gtcrn-enhancement-integration.patch"
 git apply "$PATCH_DIR/smart-turn-integration.patch"
 git apply "$PATCH_DIR/speculative-turn-integration.patch"
 git apply "$PATCH_DIR/barge-in-speech-started.patch"
+git apply "$PATCH_DIR/streaming-asr-integration.patch"
+git apply "$PATCH_DIR/streaming-asr-speech-gating.patch"
 
 git diff --check
 ```

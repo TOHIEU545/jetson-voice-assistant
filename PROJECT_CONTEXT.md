@@ -122,6 +122,8 @@ gtcrn-enhancement-integration.patch
 smart-turn-integration.patch
 speculative-turn-integration.patch
 barge-in-speech-started.patch
+streaming-asr-integration.patch
+streaming-asr-speech-gating.patch
 ```
 
 ## Validated

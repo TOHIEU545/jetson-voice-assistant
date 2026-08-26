@@ -28,9 +28,18 @@ The exact sherpa-onnx upstream repository and commit are recorded in:
 - `deps/sherpa-onnx.remote`
 - `deps/sherpa-onnx.commit`
 
-Local latency instrumentation is stored in:
+Project-local sherpa-onnx modifications are stored as an ordered patch chain:
 
-- `patches/sherpa-onnx/latency-instrumentation.patch`
+1. `patches/sherpa-onnx/latency-instrumentation.patch`
+2. `patches/sherpa-onnx/vad-stt-decoupling.patch`
+3. `patches/sherpa-onnx/gtcrn-enhancement-integration.patch`
+4. `patches/sherpa-onnx/smart-turn-integration.patch`
+5. `patches/sherpa-onnx/speculative-turn-integration.patch`
+6. `patches/sherpa-onnx/barge-in-speech-started.patch`
+7. `patches/sherpa-onnx/streaming-asr-integration.patch`
+8. `patches/sherpa-onnx/streaming-asr-speech-gating.patch`
+
+The patches must be applied in this order to the pinned sherpa-onnx commit.
 
 ## Models
 

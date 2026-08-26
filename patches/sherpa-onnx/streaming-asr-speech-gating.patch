@@ -1,0 +1,182 @@
+--- a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-streaming-asr.cc
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-streaming-asr.cc
+@@ -30,6 +30,7 @@
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstdint>
++#include <deque>
+ #include <memory>
+ #include <mutex>
+ #include <queue>
+@@ -420,6 +421,55 @@
+   bool speech_started = false;
+ 
+   // ==========================================================
++  // Speech-gated streaming ASR
++  //
++  // While idle:
++  //   PCM -> VAD + rolling pre-roll only.
++  //
++  // On speech start:
++  //   Flush pre-roll once, then stream subsequent PCM.
++  //
++  // Keep the gate open until the VAD endpoint.
++  // ==========================================================
++
++  constexpr int32_t kPreRollMs = 320;
++
++  const int64_t pre_roll_max_samples =
++      static_cast<int64_t>(sample_rate) *
++      kPreRollMs / 1000;
++
++  std::deque<std::vector<float>> pre_roll;
++
++  int64_t pre_roll_samples = 0;
++
++  bool speech_active = false;
++
++  auto enqueue_audio =
++      [&](std::vector<float> samples) {
++        if (samples.empty()) {
++          return;
++        }
++
++        StreamItem audio_item;
++
++        audio_item.type =
++            StreamItemType::kAudio;
++
++        audio_item.samples =
++            std::move(samples);
++
++        {
++          std::lock_guard<std::mutex> lock(
++              stream_queue_mutex);
++
++          stream_queue.push(
++              std::move(audio_item));
++        }
++
++        stream_queue_cv.notify_one();
++      };
++
++  // ==========================================================
+   // ALSA + VAD producer
+   // ==========================================================
+ 
+@@ -456,10 +506,17 @@
+     }
+ 
+     // --------------------------------------------------------
+-    // Feed SAME PCM to:
++    // VAD + speech-gated streaming ASR
+     //
+-    // 1. VAD
+-    // 2. Streaming STT queue
++    // IDLE:
++    //   Keep a rolling pre-roll, but do not run Zipformer.
++    //
++    // SPEECH START:
++    //   The current chunk is already in pre-roll, so flush the
++    //   buffer exactly once without duplicating that chunk.
++    //
++    // SPEAKING:
++    //   Forward all subsequent PCM chunks in real time.
+     // --------------------------------------------------------
+ 
+     if (!frontend_samples.empty()) {
+@@ -467,40 +524,51 @@
+           frontend_samples.data(),
+           frontend_samples.size());
+ 
+-      StreamItem audio_item;
+-
+-      audio_item.type =
+-          StreamItemType::kAudio;
+-
+-      audio_item.samples =
+-          std::move(
+-              frontend_samples);
+-
+-      {
+-        std::lock_guard<std::mutex> lock(
+-            stream_queue_mutex);
+-
+-        stream_queue.push(
++      if (!speech_active) {
++        pre_roll_samples +=
++            static_cast<int64_t>(
++                frontend_samples.size());
++
++        pre_roll.push_back(
+             std::move(
+-                audio_item));
++                frontend_samples));
++
++        while (pre_roll_samples >
++                   pre_roll_max_samples &&
++               !pre_roll.empty()) {
++          pre_roll_samples -=
++              static_cast<int64_t>(
++                  pre_roll.front().size());
++
++          pre_roll.pop_front();
++        }
++
++        if (vad->IsSpeechDetected()) {
++          speech_active = true;
++          speech_started = true;
++
++          fprintf(
++              stderr,
++              "[SPEECH_STARTED]\n");
++
++          fflush(stderr);
++
++          while (!pre_roll.empty()) {
++            enqueue_audio(
++                std::move(
++                    pre_roll.front()));
++
++            pre_roll.pop_front();
++          }
++
++          pre_roll_samples = 0;
++        }
++
++      } else {
++        enqueue_audio(
++            std::move(
++                frontend_samples));
+       }
+-
+-      stream_queue_cv.notify_one();
+-    }
+-
+-    // --------------------------------------------------------
+-    // Realtime speech-start event
+-    // --------------------------------------------------------
+-
+-    if (!speech_started &&
+-        vad->IsSpeechDetected()) {
+-      speech_started = true;
+-
+-      fprintf(
+-          stderr,
+-          "[SPEECH_STARTED]\n");
+-
+-      fflush(stderr);
+     }
+ 
+     // --------------------------------------------------------
+@@ -559,6 +627,10 @@
+       vad->Pop();
+ 
+       speech_started = false;
++      speech_active = false;
++
++      pre_roll.clear();
++      pre_roll_samples = 0;
+     }
+   }
+ 

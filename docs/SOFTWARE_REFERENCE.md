@@ -178,6 +178,8 @@ python3 app/voice_assistant.py
 4. smart-turn-integration.patch
 5. speculative-turn-integration.patch
 6. barge-in-speech-started.patch
+7. streaming-asr-integration.patch
+8. streaming-asr-speech-gating.patch
 ```
 
 Pinned commit:
