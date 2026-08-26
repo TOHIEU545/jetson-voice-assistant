@@ -1,0 +1,59 @@
+diff --git a/sherpa-onnx/csrc/alsa.cc b/sherpa-onnx/csrc/alsa.cc
+index 94c90808..ab5c0586 100644
+--- a/sherpa-onnx/csrc/alsa.cc
++++ b/sherpa-onnx/csrc/alsa.cc
+@@ -8,8 +8,11 @@
+ #include "sherpa-onnx/csrc/macros.h"
+ 
+ #include <algorithm>
++#include <cerrno>
++#include <chrono>
+ #include <cstdio>
+ #include <memory>
++#include <thread>
+ #include <vector>
+ 
+ #include "alsa/asoundlib.h"
+@@ -45,12 +48,36 @@ and if you want to select card 3 and device 0 on that card, please use:
+ 
+   )";
+ 
+-  int32_t err =
+-      snd_pcm_open(&capture_handle_, device_name, SND_PCM_STREAM_CAPTURE, 0);
+-  if (err) {
+-    fprintf(stderr, "Unable to open: %s. %s\n", device_name, snd_strerror(err));
+-    fprintf(stderr, "%s\n", kDeviceHelp);
+-    SHERPA_ONNX_EXIT(-1);
++  constexpr int32_t kMaxOpenAttempts = 20;
++  constexpr int32_t kRetryDelayMs = 500;
++
++  int32_t err = 0;
++
++  for (int32_t attempt = 1; attempt <= kMaxOpenAttempts; ++attempt) {
++    err =
++        snd_pcm_open(&capture_handle_, device_name, SND_PCM_STREAM_CAPTURE, 0);
++
++    if (!err) {
++      if (attempt > 1) {
++        fprintf(stderr, "Microphone opened successfully after %d attempts.\n",
++                attempt);
++      }
++      break;
++    }
++
++    if (err != -EBUSY || attempt == kMaxOpenAttempts) {
++      fprintf(stderr, "Unable to open: %s. %s\n", device_name,
++              snd_strerror(err));
++      fprintf(stderr, "%s\n", kDeviceHelp);
++      SHERPA_ONNX_EXIT(-1);
++    }
++
++    fprintf(stderr,
++            "Microphone busy: %s. Retrying in %d ms (%d/%d)...\n",
++            device_name, kRetryDelayMs, attempt, kMaxOpenAttempts);
++
++    std::this_thread::sleep_for(
++        std::chrono::milliseconds(kRetryDelayMs));
+   }
+ 
+   snd_pcm_hw_params_t *hw_params;
