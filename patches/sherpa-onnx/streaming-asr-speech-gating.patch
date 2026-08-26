@@ -23,7 +23,7 @@
 +  // Keep the gate open until the VAD endpoint.
 +  // ==========================================================
 +
-+  constexpr int32_t kPreRollMs = 320;
++  constexpr int32_t kPreRollMs = 480;
 +
 +  const int64_t pre_roll_max_samples =
 +      static_cast<int64_t>(sample_rate) *
