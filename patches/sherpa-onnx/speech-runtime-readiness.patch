@@ -1,0 +1,94 @@
+--- a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-offline-asr.cc
+@@ -602,7 +602,6 @@
+     fprintf(stderr, "[SMART_TURN] state: OFF\n");
+   }
+ 
+-  fprintf(stderr, "Started. Please speak\n");
+ 
+   int32_t window_size = vad_config.silero_vad.window_size;
+ 
+@@ -636,7 +635,20 @@
+ 
+   // Whisper recognizer was created once above and remains resident.
+   // Only this worker performs STT inference.
++  // Speech runtime readiness handshake.
++  // Python must not show Speak... before this worker is ready.
++  std::mutex stt_ready_mutex;
++  std::condition_variable stt_ready_cv;
++  bool stt_worker_ready = false;
++
+   std::thread stt_worker([&]() {
++
++    {
++      std::lock_guard<std::mutex> lock(stt_ready_mutex);
++      stt_worker_ready = true;
++    }
++    stt_ready_cv.notify_one();
++
+     // Keep the existing transcript numbering contract unchanged.
+     int32_t index = 0;
+ 
+@@ -896,6 +908,18 @@
+     }
+   });
+ 
++  // Wait until the backend-specific STT worker is ready.
++  {
++    std::unique_lock<std::mutex> lock(stt_ready_mutex);
++    stt_ready_cv.wait(lock, [&]() {
++      return stt_worker_ready;
++    });
++  }
++
++  // Unified startup contract consumed by Python.
++  fprintf(stderr, "[READY]\n");
++  fflush(stderr);
++
+   while (!stop) {
+     const std::vector<float> &samples = alsa.Read(window_size);
+ 
+--- a/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-streaming-asr.cc
++++ b/sherpa-onnx/csrc/sherpa-onnx-vad-alsa-streaming-asr.cc
+@@ -269,10 +269,22 @@
+   // ALSA/VAD producer never performs STT inference.
+   // ==========================================================
+ 
++  // Speech runtime readiness handshake.
++  // Python must not show Speak... before this worker is ready.
++  std::mutex stt_ready_mutex;
++  std::condition_variable stt_ready_cv;
++  bool stt_worker_ready = false;
++
+   std::thread stt_worker([&]() {
+     auto stream =
+         recognizer.CreateStream();
+ 
++    {
++      std::lock_guard<std::mutex> lock(stt_ready_mutex);
++      stt_worker_ready = true;
++    }
++    stt_ready_cv.notify_one();
++
+     int32_t transcript_index = 0;
+ 
+     while (true) {
+@@ -473,6 +485,18 @@
+   // ALSA + VAD producer
+   // ==========================================================
+ 
++  // Wait until the backend-specific STT worker is ready.
++  {
++    std::unique_lock<std::mutex> lock(stt_ready_mutex);
++    stt_ready_cv.wait(lock, [&]() {
++      return stt_worker_ready;
++    });
++  }
++
++  // Unified startup contract consumed by Python.
++  fprintf(stderr, "[READY]\n");
++  fflush(stderr);
++
+   while (!stop) {
+     const std::vector<float> &raw_samples =
+         alsa.Read(window_size);

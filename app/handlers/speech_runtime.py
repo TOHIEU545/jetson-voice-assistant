@@ -491,6 +491,9 @@ class SpeechRuntimeHandler(threading.Thread):
         self.parser = SpeechRuntimeParser()
         self.error = None
 
+        # Set only after C++ emits the unified [READY] event.
+        self.ready_event = threading.Event()
+
         self.speech_started_count = 0
         self.last_interruption = None
 
@@ -504,6 +507,10 @@ class SpeechRuntimeHandler(threading.Thread):
         Returns True when the line was consumed as a runtime event.
         """
         line = raw_line.strip()
+
+        if line == "[READY]":
+            self.ready_event.set()
+            return True
 
         if not SPEECH_STARTED_RE.match(line):
             return False
@@ -521,6 +528,21 @@ class SpeechRuntimeHandler(threading.Thread):
             )
 
         return True
+
+    def wait_until_ready(self, timeout=30.0):
+        """Wait for the real C++ speech-runtime readiness event."""
+
+        deadline = time.monotonic() + timeout
+
+        while True:
+            if self.ready_event.wait(timeout=0.1):
+                return True
+
+            if not self.is_alive():
+                return False
+
+            if time.monotonic() >= deadline:
+                return False
 
     def run(self):
         try:

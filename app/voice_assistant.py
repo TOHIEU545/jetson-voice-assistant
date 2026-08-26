@@ -60,7 +60,7 @@ def build_banner(session_paths):
         "Benchmark: {}\n"
         "Full pipeline: {}\n"
         "\n"
-        "Speak...\n\n"
+        "Loading speech runtime...\n"
     ).format(
         STT_BACKEND,
         gtcrn_state,
@@ -156,9 +156,29 @@ def main():
         "text": build_banner(session_paths),
     })
 
-    speech_runtime_handler.start()
+    # Flush the loading banner before model initialization.
+    llm_output_queue.join()
 
     graceful_shutdown = True
+
+    speech_runtime_handler.start()
+
+    if speech_runtime_handler.wait_until_ready(timeout=30.0):
+        llm_output_queue.put({
+            "type": "status",
+            "text": "\nSpeech runtime ready.\nSpeak...\n\n",
+        })
+        llm_output_queue.join()
+    else:
+        graceful_shutdown = False
+        llm_output_queue.put({
+            "type": "status",
+            "text": (
+                "\nERROR: speech runtime failed to become ready.\n"
+            ),
+        })
+        llm_output_queue.join()
+        stop_event.set()
 
     try:
         while speech_runtime_handler.is_alive():
