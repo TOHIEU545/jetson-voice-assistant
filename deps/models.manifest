@@ -11,3 +11,13 @@ stt/whisper-tiny.en/tiny.en-encoder.onnx	37647080 bytes
 stt/whisper-tiny.en/tiny.en-tokens.txt	835554 bytes
 vad/silero_vad.onnx	643854 bytes
 enhancement/gtcrn_simple.onnx	535638 bytes
+
+stt/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/encoder-epoch-99-avg-1.onnx  88804590 bytes
+stt/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/decoder-epoch-99-avg-1.onnx  2092272 bytes
+stt/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/joiner-epoch-99-avg-1.onnx  1026462 bytes
+stt/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/tokens.txt  5048 bytes
+
+stt/sherpa-onnx-streaming-zipformer-en-2023-06-21/encoder-epoch-99-avg-1.onnx  353707185 bytes
+stt/sherpa-onnx-streaming-zipformer-en-2023-06-21/decoder-epoch-99-avg-1.onnx  2092566 bytes
+stt/sherpa-onnx-streaming-zipformer-en-2023-06-21/joiner-epoch-99-avg-1.onnx  1026405 bytes
+stt/sherpa-onnx-streaming-zipformer-en-2023-06-21/tokens.txt  5048 bytes

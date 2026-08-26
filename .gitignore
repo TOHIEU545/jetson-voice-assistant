@@ -32,3 +32,6 @@ build/
 .vscode/
 .idea/
 .DS_Store
+
+# Generated STT benchmark audio/results
+logs/benchmarks/stt/
