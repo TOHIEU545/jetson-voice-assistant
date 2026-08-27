@@ -1,62 +1,148 @@
-# STT Model Comparison
+# STT Pipeline Model Comparison
 
-Benchmark chính thức để so sánh 3 STT model hiện có của `jetson-voice-assistant` trên fixed clean WAV.
+Benchmark này so sánh ba STT backend **trong speech pipeline hiện tại của project**, không phải direct model decode.
 
-## Câu hỏi benchmark
+## Mục tiêu
 
-Trong điều kiện audio clean, model nào cho cân bằng tốt nhất giữa:
+Chứng minh backend nào phù hợp nhất cho Jetson Nano khi chạy trong architecture thực tế đã xây dựng:
 
-- WER / exact match;
-- decode latency;
-- realtime factor (RTF);
-- CPU;
+```text
+fixed clean WAV
+      ↓
+ALSA Loopback
+      ↓
+current project speech runtime
+      ↓
+Silero VAD
+      ↓
+backend architecture
+      ↓
+transcript + latency instrumentation
+```
+
+Whisper:
+
+```text
+VAD
+→ resident offline STT worker
+→ Whisper Tiny.en
+```
+
+Zipformer:
+
+```text
+VAD
+→ rolling pre-roll / speech gating
+→ streaming Zipformer
+→ final transcript
+```
+
+Không benchmark lại continuous-vs-gated architecture. Hai Zipformer chạy bằng **streaming runtime hiện tại**, tức các optimization đã được project adopt vẫn được sử dụng.
+
+## Backends
+
+```text
+whisper
+zipformer_20m
+zipformer_2023_06_21
+```
+
+Runner **không hard-code model path/thread/provider**.
+
+Với mỗi backend, runner đặt environment rồi gọi:
+
+```python
+app.config.build_speech_command()
+```
+
+Do đó command benchmark bám theo config/source hiện tại của project.
+
+Benchmark cố định:
+
+```text
+GTCRN       OFF
+Smart Turn  OFF
+Speculative OFF
+Barge-in    ON
+Input       ALSA Loopback
+Condition   clean
+```
+
+## Vì sao dùng ALSA Loopback?
+
+Direct WAV decoder sẽ bypass VAD, pre-roll và speech gating.
+
+ALSA Loopback cho phép:
+
+```text
+WAV
+→ aplay
+→ virtual ALSA capture
+→ exact runtime architecture
+```
+
+Ba backend nhận cùng fixed PCM nhưng vẫn đi qua speech frontend thực tế.
+
+Setup một lần trên Jetson:
+
+```bash
+sudo modprobe snd-aloop
+```
+
+Expected devices:
+
+```text
+playback : plughw:Loopback,0,0
+capture  : plughw:Loopback,1,0
+```
+
+## Metrics
+
+### Accuracy
+
+- corpus WER;
+- per-sample WER;
+- exact match / N;
+- reference + hypothesis cho từng WAV.
+
+### Realtime latency
+
+- `VAD latency`: speech end → VAD endpoint (mean/median/p95/max trong JSON summary);
+- `STT latency`: VAD endpoint → final transcript (mean/median/p95/max);
+- `TOTAL latency`: speech end → final transcript (mean/median/p95/max);
+- `STT p95`;
+- `TOTAL p95`;
+- independent `wall_end_to_transcript`: từ lúc `aplay` kết thúc tới lúc runtime phát transcript.
+
+`TOTAL` là metric quan trọng nhất cho cảm giác realtime của speech frontend.
+
+### Resource
+
+- total ONNX model size referenced by the runtime command;
+- runtime startup → `[READY]`;
+- idle CPU;
+- idle RSS;
+- active CPU mean;
+- active CPU peak;
 - peak RSS;
-- stability trên Jetson Nano?
+- temperature/system snapshot trước và sau benchmark.
 
-Ba model:
+CPU >100% là bình thường khi process dùng nhiều hơn một core.
 
-```text
-Whisper Tiny.en
-Zipformer 20M 2023-02-17
-Zipformer 2023-06-21
-```
+## Dataset
 
-## Scope cố định
-
-Benchmark này **không** so sánh lại architecture streaming.
+Default:
 
 ```text
-Input       : data/stt/voicebank_demand/prepared_15/clean/*.wav
-Samples     : 15
-GTCRN       : OFF
-VAD         : bypass
-Smart Turn  : OFF
-Speculative : OFF
-Provider    : CPU
-STT threads : 2
-Precision   : FP32 / non-int8 ONNX
-Decoding    : greedy_search
+data/stt/voicebank_demand/prepared_15/
+├── clean/      # 15 WAV
+├── noisy/
+└── manifest.tsv
 ```
 
-`--enable-endpoint=false` chỉ dùng cho hai direct-file Zipformer CLI để toàn bộ fixed WAV được decode; đây không phải thay đổi runtime architecture của application.
-
-## Vì sao decode WAV trực tiếp?
-
-Mục tiêu ở benchmark này là cô lập STT model:
-
-```text
-fixed WAV
-   ↓
-STT model
-   ↓
-transcript
-```
-
-Không đưa ALSA, microphone, VAD endpoint, pre-roll hoặc speech gating vào phép so sánh.
+Vòng model-comparison hiện tại chỉ dùng `clean/`.
 
 ## Output
-
-Runner tạo:
 
 ```text
 logs/benchmarks/stt/model_comparison/<run-id>/
@@ -64,98 +150,70 @@ logs/benchmarks/stt/model_comparison/<run-id>/
 ├── samples.jsonl
 ├── summary.json
 ├── summary.md
-└── raw/
-    ├── whisper_tiny_en/
-    ├── zipformer_20m/
-    └── zipformer_2023_06_21/
+├── whisper/
+│   ├── command.txt
+│   ├── runtime.log
+│   └── model_metadata.json
+├── zipformer_20m/
+└── zipformer_2023_06_21/
 ```
 
-`logs/` là ignored generated output.
+Raw/generated result không commit.
 
-## Metric
-
-Mỗi sample:
-
-- reference;
-- hypothesis;
-- normalized exact match;
-- WER;
-- audio duration;
-- sherpa internal decode seconds;
-- RTF;
-- process wall time;
-- average CPU;
-- sampled peak CPU;
-- sampled peak RSS;
-- exit status;
-- raw stdout/stderr.
-
-Summary:
-
-- mean WER;
-- exact / N;
-- decode mean / median / p95;
-- mean RTF;
-- mean CPU;
-- maximum sampled CPU;
-- maximum peak RSS;
-- errors / parse failures.
-
-CPU có thể lớn hơn 100% vì process có thể sử dụng nhiều hơn một core.
-
-`decode_seconds`/`RTF` ưu tiên timing do sherpa-onnx in ra. `process_wall_seconds` bao gồm model load/startup + decode + teardown, nên không dùng thay decode latency.
-
-## Workflow
-
-Source benchmark phải được phát triển trên HOST.
-
-HOST:
+## HOST validation
 
 ```bash
-python3 -m py_compile benchmarks/stt/model_comparison/*.py
+python3 -m py_compile \
+  benchmarks/stt/model_comparison/benchmark_stt_pipeline.py \
+  benchmarks/stt/model_comparison/summarize_results.py
+
+python3 benchmarks/stt/model_comparison/benchmark_stt_pipeline.py \
+  --self-test
+
 git diff --check
-
-git add benchmarks/stt/model_comparison
-git commit -m "bench: add STT model comparison benchmark"
-git push origin dev
 ```
 
-Jetson:
+## Jetson smoke test
+
+Load loopback:
 
 ```bash
-git pull origin dev
+sudo modprobe snd-aloop
 ```
 
-Smoke test tracked runner với 1 WAV/model:
+Sau khi pull:
 
 ```bash
-python3 benchmarks/stt/model_comparison/benchmark_stt_models.py \
+python3 benchmarks/stt/model_comparison/benchmark_stt_pipeline.py \
   --condition clean \
   --limit 1
 ```
 
-Nếu cả 3 model PASS, chạy official 15 × 3:
+Đây là `1 WAV × 3 backend`.
+
+Nếu PASS, chạy official:
 
 ```bash
-python3 benchmarks/stt/model_comparison/benchmark_stt_models.py \
+python3 benchmarks/stt/model_comparison/benchmark_stt_pipeline.py \
   --condition clean
 ```
 
-Không chạy song song 3 model. Chạy tuần tự để tránh tranh CPU/RAM và làm sai resource measurement.
+Tức `15 WAV × 3 backend = 45 turns`.
 
-## Rebuild summary
+Runtime được load **một lần cho mỗi backend** và giữ resident trong toàn bộ 15 turns. Không reload model mỗi WAV.
+
+## Sau benchmark
+
+Đọc:
 
 ```bash
-python3 benchmarks/stt/model_comparison/summarize_results.py \
-  logs/benchmarks/stt/model_comparison/<run-id>
+cat logs/benchmarks/stt/model_comparison/<run-id>/summary.md
 ```
 
-## Accepted result
-
-Sau khi review result trên HOST, chỉ accepted conclusion mới được migrate vào:
+Accepted conclusion mới được migrate vào:
 
 ```text
 docs/stt/BENCHMARK.md
 ```
 
-Raw result không commit.
+Raw result vẫn ở `logs/`.
