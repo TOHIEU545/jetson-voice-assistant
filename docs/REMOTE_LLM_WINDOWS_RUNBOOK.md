@@ -149,9 +149,9 @@ Cấu hình remote LLM:
 
 ```bash
 export LLM_MODE=remote
-export LLM_BASE_URL="https://xxxxx.trycloudflare.com/v1/chat/completions"
-export LLM_MODEL="ministral-3:8b"
-unset LLM_API_KEY
+export REMOTE_LLM_URL="https://xxxxx.trycloudflare.com"
+export REMOTE_LLM_MODEL="ministral-3:8b"
+unset REMOTE_LLM_API_KEY
 ```
 
 Thay:
@@ -165,13 +165,13 @@ bằng URL Quick Tunnel mới vừa tạo.
 Kiểm tra URL trước khi chạy:
 
 ```bash
-echo "$LLM_BASE_URL"
+echo "$REMOTE_LLM_URL"
 ```
 
 Phải có dạng:
 
 ```text
-https://xxxxx.trycloudflare.com/v1/chat/completions
+https://xxxxx.trycloudflare.com
 ```
 
 Sau đó chạy:
@@ -192,15 +192,7 @@ Dừng Voice Assistant:
 Ctrl+C
 ```
 
-Nếu trước đó có sửa tạm source trên Jetson:
-
-```bash
-cd ~/jetson-voice-assistant
-git restore app/config.py
-git status --short
-```
-
-`git status --short` nên trống.
+Không sửa tracked source trên Jetson. Sau khi dừng, `git status --short` phải không có thay đổi tracked ngoài những gì đã pull từ GitHub.
 
 ---
 
@@ -289,9 +281,9 @@ export VOICE_ASSISTANT_SMART_TURN=0
 export VOICE_ASSISTANT_SPECULATIVE=0
 
 export LLM_MODE=remote
-export LLM_BASE_URL="https://xxxxx.trycloudflare.com/v1/chat/completions"
-export LLM_MODEL="ministral-3:8b"
-unset LLM_API_KEY
+export REMOTE_LLM_URL="https://xxxxx.trycloudflare.com"
+export REMOTE_LLM_MODEL="ministral-3:8b"
+unset REMOTE_LLM_API_KEY
 
 python3 app/voice_assistant.py
 ```

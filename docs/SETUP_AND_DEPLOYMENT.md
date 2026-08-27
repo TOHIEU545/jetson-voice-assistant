@@ -86,6 +86,8 @@ git apply "$PATCH_DIR/speculative-turn-integration.patch"
 git apply "$PATCH_DIR/barge-in-speech-started.patch"
 git apply "$PATCH_DIR/streaming-asr-integration.patch"
 git apply "$PATCH_DIR/streaming-asr-speech-gating.patch"
+git apply "$PATCH_DIR/speech-runtime-readiness.patch"
+git apply "$PATCH_DIR/alsa-capture-retry.patch"
 
 git diff --check
 ```
@@ -113,17 +115,19 @@ cmake -S . -B build \
     -DSHERPA_ONNX_ENABLE_ALSA=ON
 ```
 
-Build:
+Build cả offline và streaming target:
 
 ```bash
 cmake --build build \
-    --target sherpa-onnx-vad-alsa-offline-asr \
+    --target \
+      sherpa-onnx-vad-alsa-offline-asr \
+      sherpa-onnx-vad-alsa-streaming-asr \
     -j2
 ```
 
 ## 7. Models
 
-Runtime tối thiểu:
+Runtime mặc định tối thiểu:
 
 ```text
 Silero VAD
@@ -136,6 +140,7 @@ Optional:
 ```text
 GTCRN
 Smart Turn
+Zipformer 20M / Zipformer 2023-06-21 khi chạy streaming backend
 ```
 
 Model weights không nằm trong Git.
@@ -190,14 +195,16 @@ llama.cpp trên Nano phải build phù hợp CUDA 10.2 / compute capability 5.3.
 
 ## 10. Run
 
-Stable config:
+Cấu hình mặc định hiện tại:
 
 ```bash
 cd ~/jetson-voice-assistant
 
-VOICE_ASSISTANT_GTCRN=1 \
+VOICE_ASSISTANT_STT=whisper \
+VOICE_ASSISTANT_GTCRN=0 \
 VOICE_ASSISTANT_SMART_TURN=0 \
 VOICE_ASSISTANT_SPECULATIVE=0 \
+VOICE_ASSISTANT_BARGE_IN=1 \
 LLM_MODE=local \
 python3 app/voice_assistant.py
 ```
@@ -209,7 +216,8 @@ Kiểm tra lần lượt:
 ```text
 [ ] microphone hoạt động
 [ ] VAD nhận speech
-[ ] Whisper có transcript
+[ ] `[READY]` xuất hiện trước lời nhắc `Speak...`
+[ ] backend STT được chọn có transcript
 [ ] LLM stream response
 [ ] nhiều turn không crash
 [ ] barge-in dừng generation cũ
@@ -223,6 +231,8 @@ logs/conversations/
 logs/benchmarks/python_llm_latency/
 logs/benchmarks/full_pipeline_latency/
 ```
+
+Các path trên là runtime-generated và không commit. Benchmark implementation phải nằm dưới `tests/`; xem `docs/BENCHMARKS.md`.
 
 ## 12. Definition of reproducible
 

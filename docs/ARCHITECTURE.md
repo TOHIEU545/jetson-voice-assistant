@@ -54,15 +54,15 @@ Phản hồi nhanh → queues + workers + cancellation
         │       └── speech started ──────────────────────┐
         │                                                │
         ▼                                                │
-   speech segment                                        │
+   speech audio                                          │
         │                                                │
         ▼                                                │
  ┌──────────────────┐                                    │
- │ Smart Turn       │ optional                           │
+ │ Smart Turn       │ Whisper-only, optional             │
  └────────┬─────────┘                                    │
           ▼                                              │
  ┌──────────────────┐                                    │
- │ Whisper Tiny.en  │                                    │
+ │ STT backend      │ Whisper offline / Zipformer stream │
  └────────┬─────────┘                                    │
           │ transcript                                   │
           ▼                                              │
@@ -97,7 +97,7 @@ Có hai vùng rõ ràng:
 
 ```text
 C++ speech runtime
-→ audio, VAD, Smart Turn, Whisper
+→ audio, VAD, optional Smart Turn, Whisper/Zipformer
 
 Python orchestration
 → transcript, turn, history, cancellation, LLM
@@ -262,9 +262,17 @@ Smart Turn đã chạy được trên Jetson nhưng vẫn optional vì:
 
 ---
 
-## 7. Whisper STT
+## 7. STT backends
 
-Whisper biến speech waveform thành transcript:
+Runtime hỗ trợ ba backend:
+
+| Backend | Mode | Trạng thái |
+|---|---|---|
+| Whisper Tiny.en | Offline resident worker | Runtime default; accuracy baseline/fallback |
+| Zipformer 20M | Streaming | Experimental lightweight/speed baseline |
+| Zipformer 2023-06-21 | Streaming | Được benchmark chọn làm primary streaming backend, nhưng chưa là default |
+
+Whisper biến completed VAD segment thành transcript:
 
 ```text
 audio
@@ -289,6 +297,8 @@ segment 3
 
 Không reload model mỗi turn.
 
+Hai Zipformer dùng online recognizer. Khi idle, Silero VAD vẫn chạy nhưng Zipformer không nhận PCM; runtime chỉ giữ rolling pre-roll 480 ms. Khi speech bắt đầu, pre-roll được flush một lần và PCM tiếp tục stream đến VAD endpoint. Smart Turn/Speculative hiện không hỗ trợ path này.
+
 ---
 
 ## 8. Transcript Gate
@@ -302,10 +312,10 @@ Noise/STT có thể tạo transcript không đáng gửi vào LLM:
 "(noise)"
 ```
 
-Gate nằm giữa STT và LLM:
+Gate nằm giữa mọi STT backend và LLM:
 
 ```text
-Whisper
+Whisper / Zipformer
    │
    ▼
 Transcript Gate
@@ -566,22 +576,22 @@ record.wav → whisper → llm
 
 ---
 
-## 16. Flow bình thường hiện tại
+## 16. Flow mặc định hiện tại
 
-Cấu hình ổn định:
+Cấu hình thực tế từ source/launcher:
 
 ```text
-GTCRN       ON
+STT         Whisper
+GTCRN       OFF
 SMART_TURN  OFF
 SPECULATIVE OFF
+BARGE_IN    ON
 ```
 
 Flow:
 
 ```text
 User speaks
-   ↓
-GTCRN
    ↓
 VAD
    ↓

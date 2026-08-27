@@ -39,22 +39,26 @@ TTS chưa nằm trong runtime hiện tại; output chính là text.
 | Audio enhancement | GTCRN simple, optional |
 | VAD | Silero VAD |
 | Turn completion | Smart Turn, optional |
-| STT | Whisper Tiny.en ONNX |
+| STT | Whisper Tiny.en offline hoặc Zipformer streaming |
 | LLM | Gemma 3 1B Q4_K_M |
 | LLM runtime | llama.cpp / llama-server |
 | Orchestration | Python workers + queues |
 | Speech runtime | sherpa-onnx C++ |
 
-Cấu hình ổn định hiện tại:
+Cấu hình mặc định hiện tại từ source/launcher:
 
 ```bash
-VOICE_ASSISTANT_GTCRN=1
+VOICE_ASSISTANT_STT=whisper
+VOICE_ASSISTANT_GTCRN=0
 VOICE_ASSISTANT_SMART_TURN=0
 VOICE_ASSISTANT_SPECULATIVE=0
+VOICE_ASSISTANT_BARGE_IN=1
 LLM_MODE=local
 ```
 
-Smart Turn đã tích hợp nhưng hiện để optional. Speculative turn đã implement nhưng **không khuyến nghị bật trên Jetson Nano ở trạng thái hiện tại**.
+Benchmark đã chọn Zipformer 2023-06-21 làm primary streaming backend, nhưng runtime default vẫn là Whisper; đây là hai trạng thái khác nhau. Whisper là accuracy baseline/fallback, còn Zipformer 20M chỉ là experimental lightweight baseline.
+
+Smart Turn đã tích hợp nhưng chỉ hỗ trợ Whisper và hiện để optional. Speculative turn đã implement nhưng **không khuyến nghị bật trên Jetson Nano ở trạng thái hiện tại**.
 
 ## Tài liệu
 
@@ -62,6 +66,7 @@ Smart Turn đã tích hợp nhưng hiện để optional. Speculative turn đã 
 - [Software Reference](docs/SOFTWARE_REFERENCE.md) — source code, model, queue, feature flag và runtime contract.
 - [Setup & Deployment](docs/SETUP_AND_DEPLOYMENT.md) — dựng môi trường, build runtime, model và deploy lên Jetson.
 - [Performance](docs/PERFORMANCE.md) — latency, benchmark và bottleneck hiện tại.
+- [Benchmark Reference](docs/BENCHMARKS.md) — vị trí code/dataset/result, naming và retention policy.
 - [Project Context](PROJECT_CONTEXT.md) — trạng thái dev ngắn gọn để tiếp tục phát triển.
 
 ## Workflow

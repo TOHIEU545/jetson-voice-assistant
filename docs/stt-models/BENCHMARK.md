@@ -1,5 +1,7 @@
 # Benchmark STT — Jetson Voice Assistant
 
+> **Historical accepted benchmark.** Các kết luận trong report này tiếp tục được project chấp nhận. Raw implementation cũ không còn được sử dụng và không đáp ứng benchmark workflow mới. Mọi benchmark mới phải có tracked source/procedure trong `benchmarks/` trên HOST trước khi chạy trên Jetson.
+
 **Thiết bị:** Jetson Nano 4GB  
 **Project:** `jetson-voice-assistant`  
 **Thời gian benchmark:** 2026-08-26 → 2026-08-27

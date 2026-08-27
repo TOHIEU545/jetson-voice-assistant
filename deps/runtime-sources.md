@@ -1,34 +1,39 @@
-# Runtime Sources
+# Nguồn Runtime
+
+File này ghi provenance và quan hệ build của dependency runtime đã được project chấp nhận. Binary/model thực tế nằm dưới `runtime/` và `models/`, không commit vào Git.
 
 ## llama.cpp
 
-Runtime llama.cpp for Jetson Nano is installed from:
+Runtime Jetson Nano được cài từ:
 
 - Project: `kreier/llama.cpp-jetson`
 - Installer: `https://kreier.github.io/llama.cpp-jetson.nano/install.sh`
 
-Install command:
+Lệnh provisioning đã dùng:
 
-    curl -fsSL https://kreier.github.io/llama.cpp-jetson.nano/install.sh | bash
+```bash
+curl -fsSL https://kreier.github.io/llama.cpp-jetson.nano/install.sh | bash
+```
 
-Important binaries:
-
-- `llama-cli`
-- `llama-server`
-- `llama-bench`
-
-The exact `llama-server` version and SHA256 used by this project are recorded in:
-
-- `deps/llama-server.manifest`
+Các binary quan trọng là `llama-cli`, `llama-server` và `llama-bench`. Exact `llama-server` đã validate được ghi trong `deps/llama-server.manifest`, gồm version 5050/commit `23106f94`, target aarch64, CUDA device và SHA256.
 
 ## sherpa-onnx
 
-The exact sherpa-onnx upstream repository and commit are recorded in:
+Upstream base:
 
-- `deps/sherpa-onnx.remote`
-- `deps/sherpa-onnx.commit`
+```text
+remote: deps/sherpa-onnx.remote
+commit: deps/sherpa-onnx.commit
+```
 
-Project-local sherpa-onnx modifications are stored as an ordered patch chain:
+Giá trị hiện tại:
+
+```text
+https://github.com/k2-fsa/sherpa-onnx.git
+3e409338959097c6518998c9b72757db257f5f6f
+```
+
+Ordered project delta phải apply trên clean tree đúng commit:
 
 1. `patches/sherpa-onnx/latency-instrumentation.patch`
 2. `patches/sherpa-onnx/vad-stt-decoupling.patch`
@@ -38,164 +43,88 @@ Project-local sherpa-onnx modifications are stored as an ordered patch chain:
 6. `patches/sherpa-onnx/barge-in-speech-started.patch`
 7. `patches/sherpa-onnx/streaming-asr-integration.patch`
 8. `patches/sherpa-onnx/streaming-asr-speech-gating.patch`
+9. `patches/sherpa-onnx/speech-runtime-readiness.patch`
+10. `patches/sherpa-onnx/alsa-capture-retry.patch`
 
-The patches must be applied in this order to the pinned sherpa-onnx commit.
+Không bỏ qua hoặc đổi thứ tự nếu chưa rebase và verify lại patch stack. Responsibility/verification chi tiết của từng patch nằm trong `docs/SOFTWARE_REFERENCE.md`.
 
-## Models
+## Policy EXPERIMENT và OFFICIAL
 
-Model filenames and sizes:
+```text
+EXPERIMENT
+→ download vào ignored models/ hoặc runtime/
+→ benchmark local/Jetson
+→ chưa sửa manifest/checksum/provisioning
 
-- `deps/models.manifest`
+OFFICIAL
+→ benchmark PASS
+→ project quyết định adopt
+→ cập nhật deps/, checksum, download/build script và documentation
+```
 
-Model SHA256 checksums:
+Không coi model/runtime mới là official chỉ vì file đã tồn tại cục bộ.
 
-- `deps/models.sha256`
+## Model metadata
 
-## GTCRN Simple Speech Enhancement
+- Path và byte size: `deps/models.manifest`.
+- Integrity SHA256: `deps/models.sha256`.
+- STT provisioning/verification: `scripts/download_stt_models.sh`.
+- GTCRN provisioning/verification: `scripts/download_enhancement_models.sh`.
 
-- Model: GTCRN Simple
-- Purpose: streaming speech enhancement / denoising
-- Model variant: `gtcrn_simple.onnx`
-- Format: ONNX
+### GTCRN Simple
+
+- File: `models/enhancement/gtcrn_simple.onnx`
+- Source: `https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx`
 - Sample rate: 16 kHz
-- Runtime: sherpa-onnx + ONNX Runtime
-- Runtime binary: `sherpa-onnx-online-denoiser`
-- Provider: CPU
-- Threads benchmarked: 1
-- Streaming chunk duration: 10 ms
-- Installed path: `models/enhancement/gtcrn_simple.onnx`
-- File size: 535638 bytes
+- Size: 535638 bytes
 - SHA256: `e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534`
-- Official source: https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx
+- Vai trò: optional streaming enhancement trước VAD/STT.
 
-### Jetson Nano standalone benchmark
+Standalone Jetson benchmark đã ghi RTF offline 0.254, online 0.356, peak RSS khoảng 26.8 MiB và gần một CPU core ở online mode. GTCRN hiện đã được tích hợp vào cả Whisper offline runtime và Zipformer streaming runtime qua patch stack; flag runtime vẫn default OFF.
 
-Configuration:
+### Silero VAD
 
-    provider       = cpu
-    num_threads    = 1
-    sample_rate    = 16000 Hz
-    chunk_duration = 10 ms
-
-Results:
-
-    Model size         : 535638 bytes (~524 KiB)
-    Offline RTF        : 0.254
-    Online RTF         : 0.356
-    Online peak RSS    : ~26.8 MiB
-    Online CPU usage   : ~99% of one CPU core
-    Clean speech test  : PASS
-    Noisy speech test  : PASS
-
-Observed Whisper comparison with fan noise:
-
-    Raw audio   : "When is a microcontroller?"
-    GTCRN audio : "What is a microcontroller?"
-
-GTCRN passed the Phase 2 standalone resource and basic speech-quality
-evaluation. It is retained as the project's speech-enhancement dependency.
-
-Note: GTCRN is not integrated into the production voice pipeline by this
-dependency update.
-
-## Speech-to-Text Models
-
-All STT model weights are runtime dependencies and are stored under
-`models/stt/`. Model weights are intentionally excluded from Git.
-
-The exact installed file sizes are recorded in:
-
-- `deps/models.manifest`
-
-The exact installed file SHA256 values are recorded in:
-
-- `deps/models.sha256`
+- File: `models/vad/silero_vad.onnx`
+- Size: 643854 bytes
+- SHA256 nằm trong `deps/models.sha256`.
+- Vai trò: speech start/endpoint cho cả hai runtime; chạy liên tục kể cả khi streaming ASR đang gated.
 
 ### Whisper Tiny.en
 
-- Backend name: `whisper`
-- Model: Whisper Tiny.en
+- Backend: `whisper`
 - Runtime: sherpa-onnx offline recognizer
-- Mode: non-streaming / offline
-- Provider: CPU
-- Project role: stable accuracy baseline / fallback
-- Installed path: `models/stt/whisper-tiny.en`
-- Official archive:
-  `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.en.tar.bz2`
+- Path: `models/stt/whisper-tiny.en`
+- Official archive: `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.en.tar.bz2`
+- Vai trò: stable accuracy baseline/fallback và runtime default hiện tại.
 
-Runtime files:
+Runtime files: `tiny.en-encoder.onnx`, `tiny.en-decoder.onnx`, `tiny.en-tokens.txt`.
 
-- `tiny.en-encoder.onnx`
-- `tiny.en-decoder.onnx`
-- `tiny.en-tokens.txt`
-
-Benchmark status:
-
-- Exact matches: 6 / 9
-- Average WER: 6.06%
-- Average RTF: 0.668
-- Maximum RSS: 355.4 MB
+Benchmark 9 mẫu: exact 6/9, average WER 6.06%, average RTF 0.668, maximum RSS 355.4 MB.
 
 ### Streaming Zipformer 20M — 2023-02-17
 
-- Backend name: `zipformer_20m`
-- Model: `sherpa-onnx-streaming-zipformer-en-20M-2023-02-17`
+- Backend: `zipformer_20m`
 - Runtime: sherpa-onnx online recognizer
-- Mode: streaming transducer
-- Provider: CPU
-- Project role: experimental lightweight / speed baseline
-- Installed path:
-  `models/stt/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17`
-- Official archive:
-  `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2`
+- Path: `models/stt/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17`
+- Vai trò: experimental lightweight/speed baseline, không phải selected primary backend.
 
-Runtime files:
+Runtime files: encoder, decoder, joiner `epoch-99-avg-1.onnx` và `tokens.txt`.
 
-- `encoder-epoch-99-avg-1.onnx`
-- `decoder-epoch-99-avg-1.onnx`
-- `joiner-epoch-99-avg-1.onnx`
-- `tokens.txt`
-
-Benchmark status:
-
-- Exact matches: 0 / 9
-- Average WER: 52.41%
-- Average RTF: 0.267
-- Maximum RSS: 218.8 MB
-
-The model is retained because it provides a useful lightweight and
-latency/resource reference, but it is not the selected primary STT backend.
+Benchmark 9 mẫu: exact 0/9, average WER 52.41%, average RTF 0.267, maximum RSS 218.8 MB.
 
 ### Streaming Zipformer — 2023-06-21
 
-- Backend name: `zipformer_2023_06_21`
-- Model: `sherpa-onnx-streaming-zipformer-en-2023-06-21`
+- Backend: `zipformer_2023_06_21`
 - Runtime: sherpa-onnx online recognizer
-- Mode: streaming transducer
-- Provider: CPU
-- Project role: selected primary streaming STT candidate
-- Installed path:
-  `models/stt/sherpa-onnx-streaming-zipformer-en-2023-06-21`
-- Official archive:
-  `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-21.tar.bz2`
+- Path: `models/stt/sherpa-onnx-streaming-zipformer-en-2023-06-21`
+- Vai trò: benchmark-selected primary streaming backend; chưa là launcher/runtime default.
 
-Runtime files:
+Runtime files: encoder, decoder, joiner `epoch-99-avg-1.onnx` và `tokens.txt`.
 
-- `encoder-epoch-99-avg-1.onnx`
-- `decoder-epoch-99-avg-1.onnx`
-- `joiner-epoch-99-avg-1.onnx`
-- `tokens.txt`
+Benchmark 9 mẫu: exact 5/9, average WER 6.88%, average RTF 0.613, maximum RSS 760.8 MB.
 
-Benchmark status:
+Streaming architecture được chấp nhận dùng Silero VAD gating và rolling pre-roll 480 ms; report chi tiết ở `docs/stt-models/BENCHMARK.md`.
 
-- Exact matches: 5 / 9
-- Average WER: 6.88%
-- Average RTF: 0.613
-- Maximum RSS: 760.8 MB
+## Khi cập nhật file này
 
-This model is the selected streaming candidate for the next architecture
-iteration. Whisper Tiny.en remains available as the stable fallback.
-
-Full benchmark details:
-
-- `docs/benchmarks/STT_BENCHMARK_REPORT_2026-08-26.md`
+Chỉ cập nhật sau khi xác minh source/version/commit, build command, runtime config và hardware validation. Nếu bytes model hoặc binary đổi, phải cập nhật manifest/checksum tương ứng trong cùng thay đổi.

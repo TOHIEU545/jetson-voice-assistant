@@ -5,33 +5,31 @@ __pycache__/
 .venv/
 venv/
 
-# Local runtime / third-party dependencies
+# Local runtime and data
 runtime/
-
-# Models
 models/
-*.onnx
-*.gguf
+data/
+logs/
 
-# Runtime logs
-logs/conversations/
-logs/*.log
-logs/*.pid
-
-# Build artifacts
+# Build
 build/
 **/build/
 
-# Manual backups / archives
-*.bak
-*.pre-latency
+# Model and data artifacts
+*.onnx
+*.gguf
+*.wav
+*.mp3
+*.flac
+*.parquet
+
+# Archives
+*.tar
 *.tar.gz
+*.bz2
 *.zip
 
 # Editor / OS
 .vscode/
 .idea/
 .DS_Store
-
-# Generated STT benchmark audio/results
-logs/benchmarks/stt/

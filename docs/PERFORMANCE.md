@@ -2,6 +2,8 @@
 
 Tài liệu này chỉ chứa latency, benchmark và bottleneck.
 
+> Các số liệu đã ghi là historical accepted evidence. Raw benchmark implementation/result cũ không còn được sử dụng sau infrastructure reset. Measurement mới phải có tracked producer/procedure trong `benchmarks/` trước khi chạy trên Jetson.
+
 ## 1. Platform
 
 ```text
@@ -30,7 +32,7 @@ T3→T4  LLM TTFT
 T0→T4  speech → first token
 ```
 
-## 3. Stable baseline samples
+## 3. Whisper/GTCRN baseline samples
 
 Config:
 
@@ -39,6 +41,8 @@ GTCRN ON
 Smart Turn OFF
 Speculative OFF
 ```
+
+Đây là measured config lịch sử, không phải default hiện tại. Source và launcher hiện default Whisper, GTCRN OFF, Smart Turn OFF và Speculative OFF.
 
 Sample A:
 
@@ -119,7 +123,13 @@ history protection
 runtime recovery
 ```
 
-## 7. Current priorities
+## 7. Streaming Zipformer đã được chọn bằng benchmark
+
+Zipformer 2023-06-21 với VAD-gated streaming và pre-roll 480 ms đã giảm idle ASR CPU từ khoảng 120.4% xuống 22.3%. Speech frontend latency trung bình tăng từ 0.520 s lên 0.570 s; live exact vẫn 2/3 trong phép đo được report. Chi tiết và nguồn log logical nằm trong `docs/stt-models/BENCHMARK.md`.
+
+Kết quả này chọn backend streaming chính nhưng không tự đổi runtime default khỏi Whisper.
+
+## 8. Current priorities
 
 ```text
 1. speech/STT latency
@@ -128,7 +138,7 @@ runtime recovery
 4. LLM generation length
 ```
 
-## 8. Optimization direction
+## 9. Optimization direction
 
 Smart Turn:
 
@@ -144,7 +154,7 @@ Mục tiêu: feature sẵn sàng trước endpoint.
 
 Noise test nên dùng fixed WAV để A/B reproducible thay vì chỉ dựa vào mic live.
 
-## 9. Benchmark rule
+## 10. Benchmark rule
 
 Khi A/B:
 
@@ -155,3 +165,5 @@ same audio/prompt
 same environment
 change one variable only
 ```
+
+Quy ước code/dataset/result và retention nằm trong `docs/BENCHMARKS.md`.
