@@ -1,4 +1,10 @@
-# Speech Pipeline Research Roadmap
+# STT / Speech Pipeline Roadmap
+
+> **Vai trò tài liệu:** roadmap học/nghiên cứu và tối ưu speech frontend, không phải source of truth cho runtime default.
+>
+> **Trạng thái runtime hiện tại:** project hỗ trợ Whisper Tiny.en offline và Zipformer streaming; benchmark lịch sử chọn Zipformer 2023-06-21 làm primary streaming backend, trong khi launcher vẫn default Whisper. GTCRN, Smart Turn và Speculative đều là optional.
+>
+> Kết quả benchmark đã chấp nhận nằm tại `docs/stt/BENCHMARK.md`. Benchmark source mới phải nằm dưới `benchmarks/`.
 
 > Mục tiêu: hiểu **đầy đủ bản chất kỹ thuật** của pipeline Speech AI đang dùng trong project `jetson-voice-assistant`, để biết mỗi module làm gì, vì sao cần nó, tham số nào ảnh hưởng chất lượng/latency, và nên tối ưu deployment ở đâu.
 >

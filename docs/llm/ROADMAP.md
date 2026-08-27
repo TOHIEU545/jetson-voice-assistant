@@ -3,7 +3,7 @@
 **Project:** `jetson-voice-assistant`
 **Target:** Jetson Nano 4GB
 **Branch:** `dev`
-**Scope:** tối ưu luồng **1 người nói → STT → LLM → stream text**.
+**Scope:** tối ưu LLM sau khi speech/STT baseline đủ ổn để đo tách biệt.
 **Không mở rộng sang Speaker Verification, TTS, Smart Turn, GTCRN hay Speculative trong Phase 1–5 này.**
 
 ---
@@ -12,7 +12,7 @@
 
 ### Speech frontend đã chốt
 
-Theo `docs/stt-models/BENCHMARK.md`:
+Theo `docs/stt/BENCHMARK.md`:
 
 ```text
 Primary STT:
@@ -75,7 +75,7 @@ System prompt này được gửi lại cùng history ở mỗi request nên s�
 
 ### Điểm config cần lưu ý
 
-`docs/stt-models/BENCHMARK.md` đã chọn `zipformer_2023_06_21` làm primary STT, nhưng `scripts/run_voice_assistant.sh` vẫn default:
+`docs/stt/BENCHMARK.md` đã chọn `zipformer_2023_06_21` làm primary STT, nhưng `scripts/run_voice_assistant.sh` vẫn default:
 
 ```bash
 VOICE_ASSISTANT_STT="whisper"
@@ -711,7 +711,7 @@ Có thể thêm source/config khác nếu benchmark chứng minh cần.
 Docs:
 
 ```text
-docs/llm-optimization/ROADMAP.md
+docs/llm/ROADMAP.md
 docs/llm-models/BENCHMARK.md      # nếu cần report riêng
 PROJECT_CONTEXT.md                # cập nhật sau khi chốt
 ```

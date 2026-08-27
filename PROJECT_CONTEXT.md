@@ -204,4 +204,4 @@ git status --short
 - Zipformer được benchmark chọn nhưng launcher vẫn default Whisper.
 - Hardware apply/build validation của full 10-patch stack phải thực hiện trên clean pinned tree/Jetson.
 
-Reference dài hạn: `docs/SOFTWARE_REFERENCE.md`. Benchmark policy/structure: `docs/BENCHMARKS.md`.
+Reference dài hạn: `docs/SOFTWARE_REFERENCE.md`. Benchmark policy: `benchmarks/README.md`. Accepted STT results: `docs/stt/BENCHMARK.md`; LLM results: `docs/llm/BENCHMARK.md`.

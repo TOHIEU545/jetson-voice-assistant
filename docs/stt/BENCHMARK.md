@@ -98,7 +98,7 @@ VOICE_ASSISTANT_STT="zipformer_2023_06_21"
 
 ---
 
-# 5. Kiến trúc streaming ban đầu
+## 5. Kiến trúc streaming ban đầu
 
 Ban đầu Zipformer nhận PCM liên tục, kể cả khi người dùng không nói.
 
@@ -154,7 +154,7 @@ python_llm_latency_2026-08-26_09-47-41.jsonl
 
 ---
 
-# 6. Kiến trúc mới: VAD-gated streaming
+## 6. Kiến trúc mới: VAD-gated streaming
 
 Mục tiêu là giữ true streaming nhưng không để Zipformer decode liên tục khi idle.
 
@@ -222,9 +222,9 @@ pre-roll = 480 ms
 
 ---
 
-# 8. So sánh BEFORE vs AFTER speech gating
+## 8. So sánh BEFORE vs AFTER speech gating
 
-## 8.1 Tài nguyên khi idle
+### 8.1 Tài nguyên khi idle
 
 | Metric | BEFORE | AFTER | Thay đổi |
 |---|---:|---:|---:|
@@ -247,7 +247,7 @@ Giảm khoảng:
 
 ---
 
-## 8.2 Speech frontend latency
+### 8.2 Speech frontend latency
 
 Chỉ so sánh phần VAD + STT, không dùng thời gian LLM giữa các turn.
 
@@ -267,7 +267,7 @@ Trade-off:
 
 ---
 
-## 8.3 Accuracy live
+### 8.3 Accuracy live
 
 | Metric | BEFORE | AFTER |
 |---|---:|---:|
@@ -284,58 +284,142 @@ Không thấy clipping đầu câu với pre-roll 480 ms.
 
 ---
 
-# 9. Nguồn log để trace trên Jetson
-
-Root benchmark STT:
-
-```text
-~/jetson-voice-assistant/logs/benchmarks/stt/
-```
-
-## Fixed-WAV benchmark
-
-| Path | Nội dung |
-|---|---|
-| `reference_audio/` | Audio gốc |
-| `reference_segments/` | Speech segment sau VAD + padding |
-| `reference_results/` | Kết quả benchmark ba model |
-| `reference_results/summary.tsv` | Bảng tổng hợp |
-
-## BEFORE speech gating
-
-```text
-logs/benchmarks/stt/live_baseline_before_gating/
-```
-
-| File | Nội dung |
-|---|---|
-| `summary.txt` | Tổng hợp baseline |
-| `idle_cpu_top.txt` | CPU idle samples |
-| `idle_memory.txt` | Process RSS + system RAM + swap |
-| `2026-08-26_09-47-41.txt` | Transcript live |
-| `full_pipeline_latency_2026-08-26_09-47-41.jsonl` | VAD/STT/full-pipeline timing |
-| `python_llm_latency_2026-08-26_09-47-41.jsonl` | Python/LLM timing |
-
-## AFTER speech gating
-
-```text
-logs/benchmarks/stt/live_after_gating/
-```
-
-| File | Nội dung |
-|---|---|
-| `summary.txt` | Tổng hợp sau gating |
-| `idle_cpu_top.txt` | 15 stable CPU samples |
-| `idle_memory.txt` | Process RSS + system RAM + swap |
-| `2026-08-27_01-16-54.txt` | Transcript live |
-| `full_pipeline_latency_2026-08-27_01-16-54.jsonl` | VAD/STT/full-pipeline timing |
-| `python_llm_latency_2026-08-27_01-16-54.jsonl` | Python/LLM timing |
-
 ---
 
-# 10. Kết luận
+## 9. Latency speech pipeline lịch sử
 
-## Model
+Config:
+
+```text
+GTCRN ON
+Smart Turn OFF
+Speculative OFF
+```
+
+Đây là measured config lịch sử, không phải default hiện tại. Source và launcher hiện default Whisper, GTCRN OFF, Smart Turn OFF và Speculative OFF.
+
+Sample A:
+
+```text
+VAD             0.532 s
+STT             1.406 s
+LLM TTFT        0.557 s
+Speech → First  2.496 s
+```
+
+Sample B:
+
+```text
+VAD             0.532 s
+STT             1.077 s
+LLM TTFT        0.468 s
+Speech → First  2.077 s
+```
+
+Queue waits ở các run này chỉ ở mức sub-millisecond; model inference mới là bottleneck chính.
+
+## 10. Turn-control performance lịch sử
+
+### Smart Turn
+
+Measured order:
+
+```text
+feature extraction  ~1.3 s
+inference           ~0.32 s
+hot total           ~1.65 s
+```
+
+Full runtime thường khoảng:
+
+```text
+~1.7–1.9 s / evaluation
+```
+
+Bottleneck chính là feature extraction.
+
+### Speculative Turn
+
+```text
+Implemented : YES
+Recommended : NO
+Default     : OFF
+```
+
+Lý do observed:
+
+```text
+provisional work
+   +
+revision mới đến chậm
+   ↓
+response lặp / extra compute / unstable UX
+```
+
+### Barge-in
+
+Hardware test PASS:
+
+```text
+LLM đang generate
+   ↓
+user speech start
+   ↓
+generation cũ dừng
+   ↓
+new speech vẫn được STT/LLM
+```
+
+Đã xác nhận:
+
+```text
+speech-start bridge
+cancellation
+history protection
+runtime recovery
+```
+
+## 11. Trạng thái evidence và benchmark tiếp theo
+
+Các số liệu trong tài liệu này là **historical accepted evidence**. Raw runner/log cũ đã được reset khỏi working tree hiện tại; Git history vẫn giữ các artifact từng được track.
+
+Từ policy mới, mọi phép đo mới phải có tracked source/procedure dưới:
+
+```text
+benchmarks/
+```
+
+trước khi chạy trên Jetson. Raw result mới chỉ nằm dưới:
+
+```text
+logs/benchmarks/
+```
+
+Input benchmark hiện tại nằm riêng dưới:
+
+```text
+data/stt/voicebank_demand/prepared_15/
+├── clean/
+├── noisy/
+└── manifest.tsv
+```
+
+Benchmark tiếp theo:
+
+```text
+Whisper Tiny.en
+vs
+Zipformer 2023-06-21
+
+clean / noisy
+GTCRN OFF / ON
+```
+
+Mục tiêu là đánh giá noise robustness bằng fixed WAV + reference transcript, thay cho đánh giá live không kiểm soát.
+
+## 12. Kết luận
+
+### Model
 
 | Model | Kết luận |
 |---|---|
@@ -343,7 +427,7 @@ logs/benchmarks/stt/live_after_gating/
 | Zipformer 20M | Giữ làm lightweight / speed baseline |
 | **Zipformer 2023-06-21** | **Chọn làm backend streaming chính** |
 
-## Streaming architecture
+### Streaming architecture
 
 | Kiến trúc | CPU idle | Latency STT | Accuracy | Kết luận |
 |---|---:|---:|---|---|

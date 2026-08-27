@@ -1,6 +1,6 @@
 # Software Reference
 
-Tài liệu này là bản tra cứu source dài hạn của `jetson-voice-assistant`. Nội dung được đối chiếu với tracked source, dependency metadata và actual diff trong patch stack; runtime data dưới `data/`, `models/`, `runtime/` và `logs/` không phải source of truth.
+Tài liệu này là bản tra cứu source dài hạn của `jetson-voice-assistant`. Nội dung được đối chiếu với tracked source, dependency metadata và actual diff trong patch stack; runtime data dưới `models/`, `runtime/` và `logs/` không phải source of truth.
 
 ## 1. Tổng quan repository
 
@@ -37,16 +37,16 @@ C++ stderr/stdout
 | `app/core/` | Contract/state độc lập backend: message, bounded conversation, revision và cancellation. | Tracked source |
 | `app/backends/` | Adapter cho local llama.cpp và remote OpenAI-compatible endpoint. | Tracked source |
 | `app/handlers/` | Worker nối speech runtime, transcript gate, LLM request lifecycle và output/log. | Tracked source |
+| `config/` | Chỗ dành cho config tracked; hiện chỉ có `.gitkeep`, config runtime thực nằm trong `app/config.py` và launcher. | Tracked placeholder |
 | `deps/` | Metadata để tái tạo chính xác third-party runtime/model đã được project chính thức chấp nhận; không chứa binary thực tế. | Tracked source metadata |
-| `docs/` | Architecture, setup, benchmark methodology/report, runbook và roadmap. | Tracked/untracked documentation |
+| `docs/` | Architecture, setup/deployment, subsystem roadmap và accepted benchmark report. | Tracked documentation |
 | `patches/` | Local delta của project áp lên upstream sherpa-onnx đã pin trong `deps/`. | Tracked source delta |
 | `scripts/` | Provisioning, launcher và network/runtime operational tooling. | Tracked tooling |
 | `tests/` | Software unit/regression/parser/state/backend contract tests; không chứa board benchmark. | Tracked test source |
 | `benchmarks/` | Reproducible source/procedure cho hardware, model và performance benchmark chạy trên Jetson. | Tracked benchmark source |
-| `data/` | Benchmark/runtime input local, ignored. Không phải source và không phải generated output. | Ignored runtime data |
 | `models/` | Model weights local/runtime. Không phải tracked source. | Ignored runtime data |
 | `runtime/` | Third-party source/build/binary cục bộ trên máy. Không phải source of truth của project. | Ignored runtime data |
-| `logs/` | Generated runtime/benchmark output, conversation log và raw result. Không chứa dataset/input hoặc source code. | Ignored/generated data; một số legacy result từng được track |
+| `logs/` | Conversation logs, benchmark dataset/input/output/result và artifact sinh khi chạy. | Ignored/generated data; một số legacy result từng được track |
 
 ## 3. Python application
 
@@ -336,4 +336,4 @@ Task documentation/cleanup không tự sửa các discrepancy có thể đổi b
 | Streaming Zipformer/gating | patches 7–9 | speech STT config test + STT benchmark report |
 | ALSA startup recovery | `alsa-capture-retry.patch` | build + real device busy/release test |
 | Official dependency/model | `deps/`, download scripts | checksum/provenance + hardware acceptance |
-| Benchmark methodology/path | `benchmarks/README.md`, `docs/BENCHMARKS.md`, source dưới `benchmarks/` | result dưới `logs/benchmarks/<topic>/` |
+| Benchmark methodology/path | `benchmarks/README.md`, `benchmarks/README.md`, source dưới `benchmarks/` | result dưới `logs/benchmarks/<topic>/` |

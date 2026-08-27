@@ -62,11 +62,14 @@ Smart Turn đã tích hợp nhưng chỉ hỗ trợ Whisper và hiện để opt
 
 ## Tài liệu
 
-- [Architecture](docs/ARCHITECTURE.md) — kiến trúc và bản chất hoạt động của hệ thống.
-- [Software Reference](docs/SOFTWARE_REFERENCE.md) — source code, model, queue, feature flag và runtime contract.
-- [Setup & Deployment](docs/SETUP_AND_DEPLOYMENT.md) — dựng môi trường, build runtime, model và deploy lên Jetson.
-- [Performance](docs/PERFORMANCE.md) — latency, benchmark và bottleneck hiện tại.
-- [Benchmark Reference](docs/BENCHMARKS.md) — vị trí code/dataset/result, naming và retention policy.
+- [Architecture](docs/ARCHITECTURE.md) — kiến trúc và data flow của hệ thống.
+- [Software Reference](docs/SOFTWARE_REFERENCE.md) — bản đồ source, deps, patches, tests và runtime contract.
+- [Setup & Deployment](docs/SETUP_AND_DEPLOYMENT.md) — build/deploy local và remote.
+- [STT Benchmark](docs/stt/BENCHMARK.md) — accepted STT/speech performance results.
+- [STT Roadmap](docs/stt/ROADMAP.md) — roadmap nghiên cứu/tối ưu speech frontend.
+- [LLM Benchmark](docs/llm/BENCHMARK.md) — accepted LLM performance evidence.
+- [LLM Roadmap](docs/llm/ROADMAP.md) — kế hoạch benchmark/tối ưu LLM.
+- [Benchmark Policy](benchmarks/README.md) — quy tắc code/input/output và HOST → Jetson workflow.
 - [Project Context](PROJECT_CONTEXT.md) — trạng thái dev ngắn gọn để tiếp tục phát triển.
 
 ## Workflow

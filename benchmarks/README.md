@@ -156,3 +156,27 @@ GTCRN OFF / ON
 ```
 
 VoiceBank-DEMAND `prepared_15/` được giữ dưới `data/stt/voicebank_demand/` làm runtime input. Task cleanup này chưa tạo runner mới; runner/procedure phải được phát triển trên HOST dưới `benchmarks/stt/noise_robustness/` ở task tiếp theo.
+
+## Accepted report theo subsystem
+
+Benchmark policy chỉ nằm tại file này. Accepted kết quả được tách theo subsystem:
+
+```text
+docs/stt/BENCHMARK.md
+→ STT / VAD-gating / speech frontend / Smart Turn historical evidence
+
+docs/llm/BENCHMARK.md
+→ LLM latency/performance accepted evidence
+```
+
+Không tạo thêm một benchmark-policy document thứ hai trong `docs/` để tránh duplicate.
+
+Input và output luôn tách riêng:
+
+```text
+data/
+→ input
+
+logs/benchmarks/
+→ generated output
+```

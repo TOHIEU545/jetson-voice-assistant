@@ -123,7 +123,7 @@ Runtime files: encoder, decoder, joiner `epoch-99-avg-1.onnx` và `tokens.txt`.
 
 Benchmark 9 mẫu: exact 5/9, average WER 6.88%, average RTF 0.613, maximum RSS 760.8 MB.
 
-Streaming architecture được chấp nhận dùng Silero VAD gating và rolling pre-roll 480 ms; report chi tiết ở `docs/stt-models/BENCHMARK.md`.
+Streaming architecture được chấp nhận dùng Silero VAD gating và rolling pre-roll 480 ms; report chi tiết ở `docs/stt/BENCHMARK.md`.
 
 ## Khi cập nhật file này
 
