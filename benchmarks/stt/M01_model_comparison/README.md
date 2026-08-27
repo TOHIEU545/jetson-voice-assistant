@@ -145,7 +145,7 @@ Vòng model-comparison hiện tại chỉ dùng `clean/`.
 ## Output
 
 ```text
-logs/benchmarks/stt/model_comparison/<run-id>/
+logs/benchmarks/stt/M01_model_comparison/<run-id>/
 ├── metadata.json
 ├── samples.jsonl
 ├── summary.json
@@ -164,10 +164,10 @@ Raw/generated result không commit.
 
 ```bash
 python3 -m py_compile \
-  benchmarks/stt/model_comparison/benchmark_stt_pipeline.py \
-  benchmarks/stt/model_comparison/summarize_results.py
+  benchmarks/stt/M01_model_comparison/benchmark_stt_pipeline.py \
+  benchmarks/stt/M01_model_comparison/summarize_results.py
 
-python3 benchmarks/stt/model_comparison/benchmark_stt_pipeline.py \
+python3 benchmarks/stt/M01_model_comparison/benchmark_stt_pipeline.py \
   --self-test
 
 git diff --check
@@ -184,7 +184,7 @@ sudo modprobe snd-aloop
 Sau khi pull:
 
 ```bash
-python3 benchmarks/stt/model_comparison/benchmark_stt_pipeline.py \
+python3 benchmarks/stt/M01_model_comparison/benchmark_stt_pipeline.py \
   --condition clean \
   --limit 1
 ```
@@ -194,7 +194,7 @@ python3 benchmarks/stt/model_comparison/benchmark_stt_pipeline.py \
 Nếu PASS, chạy official:
 
 ```bash
-python3 benchmarks/stt/model_comparison/benchmark_stt_pipeline.py \
+python3 benchmarks/stt/M01_model_comparison/benchmark_stt_pipeline.py \
   --condition clean
 ```
 
@@ -207,7 +207,7 @@ Runtime được load **một lần cho mỗi backend** và giữ resident trong
 Đọc:
 
 ```bash
-cat logs/benchmarks/stt/model_comparison/<run-id>/summary.md
+cat logs/benchmarks/stt/M01_model_comparison/<run-id>/summary.md
 ```
 
 Accepted conclusion mới được migrate vào:
