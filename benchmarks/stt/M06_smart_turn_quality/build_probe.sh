@@ -3,7 +3,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-SHERPA_ONNX_SRC="${SHERPA_ONNX_SRC:-$HOME/jetson-voice-assistant-runtime-dev/sherpa-onnx}"
+if [[ -z "${SHERPA_ONNX_SRC:-}" ]]; then
+    if [[ -d "$HOME/jetson-voice-assistant-runtime-dev/sherpa-onnx" ]]; then
+        SHERPA_ONNX_SRC="$HOME/jetson-voice-assistant-runtime-dev/sherpa-onnx"
+    elif [[ -d "$HOME/jetson-voice-assistant/runtime/sherpa-onnx" ]]; then
+        SHERPA_ONNX_SRC="$HOME/jetson-voice-assistant/runtime/sherpa-onnx"
+    else
+        echo "ERROR: cannot locate sherpa-onnx source" >&2
+        exit 1
+    fi
+fi
 BUILD_DIR="$SHERPA_ONNX_SRC/build"
 
 FLAGS_FILE="$BUILD_DIR/sherpa-onnx/csrc/CMakeFiles/sherpa-onnx-vad-alsa-offline-asr.dir/flags.make"
@@ -48,6 +57,20 @@ echo "Sherpa build : $BUILD_DIR"
 echo "Output       : $BIN"
 echo
 
+ORT_LIB_DIR="$BUILD_DIR/_deps/onnxruntime-src/lib"
+
+if [[ -f "$ORT_LIB_DIR/libonnxruntime.a" ]]; then
+    ORT_LIB="$ORT_LIB_DIR/libonnxruntime.a"
+elif [[ -f "$ORT_LIB_DIR/libonnxruntime.so" ]]; then
+    ORT_LIB="$ORT_LIB_DIR/libonnxruntime.so"
+else
+    echo "ERROR: ONNX Runtime library not found:" >&2
+    echo "  $ORT_LIB_DIR" >&2
+    exit 1
+fi
+
+echo "ONNX Runtime : $ORT_LIB"
+
 echo "[1/2] Compile"
 
 # Intentionally use word splitting here because these values are the
@@ -80,7 +103,7 @@ echo "[2/2] Link"
         ../../lib/libsherpa-onnx-kaldifst-core.a \
         ../../lib/libssentencepiece_core.a \
         -lpthread \
-        ../../_deps/onnxruntime-src/lib/libonnxruntime.a \
+        "$ORT_LIB" \
         -lm \
         ../../lib/libsherpa-onnx-fstfar.a \
         ../../lib/libsherpa-onnx-fst.a \
