@@ -4,14 +4,14 @@ set -euo pipefail
 # ALSA Loopback helper for STT pipeline benchmarks.
 #
 # Tracked on HOST under:
-#   benchmarks/stt/M01_model_comparison/prepare_alsa_loopback.sh
+#   scripts/prepare_alsa_loopback.sh
 #
 # Executed on Jetson before fixed-WAV pipeline benchmarks.
 #
 # Usage:
-#   ./prepare_alsa_loopback.sh load     # default
-#   ./prepare_alsa_loopback.sh status
-#   ./prepare_alsa_loopback.sh unload
+#   ./scripts/prepare_alsa_loopback.sh load     # default
+#   ./scripts/prepare_alsa_loopback.sh status
+#   ./scripts/prepare_alsa_loopback.sh unload
 #
 # Expected benchmark devices:
 #   playback -> plughw:Loopback,0,0
