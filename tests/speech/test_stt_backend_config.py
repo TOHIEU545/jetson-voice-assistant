@@ -14,13 +14,13 @@ ROOT = os.path.abspath(
 )
 
 
-def command_for(backend, smart_turn="0"):
+def command_for(backend, smart_turn="0", speculative="0"):
     env = os.environ.copy()
 
     env["VOICE_ASSISTANT_STT"] = backend
     env["VOICE_ASSISTANT_GTCRN"] = "0"
     env["VOICE_ASSISTANT_SMART_TURN"] = smart_turn
-    env["VOICE_ASSISTANT_SPECULATIVE"] = "0"
+    env["VOICE_ASSISTANT_SPECULATIVE"] = speculative
 
     code = (
         "import sys;"
@@ -61,16 +61,30 @@ def main():
     assert "sherpa-onnx-vad-alsa-streaming-asr" in r.stdout
     assert "streaming-zipformer-en-2023-06-21" in r.stdout
 
-    # Smart Turn must not accidentally enter streaming runtime yet.
+    # M07: Smart Turn must enter the streaming runtime with the
+    # same model/threshold/thread contract as the Whisper path.
     r = command_for("zipformer_20m", smart_turn="1")
+    assert r.returncode == 0, r.stderr
+    assert "sherpa-onnx-vad-alsa-streaming-asr" in r.stdout
+    assert "--smart-turn-model=" in r.stdout
+    assert "--smart-turn-threshold=0.5" in r.stdout
+    assert "--smart-turn-num-threads=4" in r.stdout
+
+    # Speculative transcription is still Whisper-only in M07.
+    r = command_for(
+        "zipformer_20m",
+        smart_turn="1",
+        speculative="1",
+    )
     assert r.returncode != 0
-    assert "Smart Turn" in r.stderr
+    assert "Speculative turn" in r.stderr
 
     print("PASS: STT backend selection")
     print("Whisper -> offline runtime")
     print("Zipformer 20M -> streaming runtime")
     print("Zipformer 2023-06-21 -> streaming runtime")
-    print("Streaming + Smart Turn guard -> PASS")
+    print("Streaming + Smart Turn -> PASS")
+    print("Streaming + Speculative guard -> PASS")
 
 
 if __name__ == "__main__":

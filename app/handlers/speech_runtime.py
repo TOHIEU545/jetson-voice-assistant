@@ -56,7 +56,7 @@ SMART_TURN_FALLBACK_RE = re.compile(
     r"turn_id=(\d+)\s+"
     r"candidate_id=(\d+)\s+"
     r"segment_count=(\d+)\s+"
-    r"decision=ERROR\s+fallback=WHISPER$"
+    r"decision=ERROR\s+fallback=(?:WHISPER|ZIPFORMER)$"
 )
 
 # Phase 9 runtime contract.

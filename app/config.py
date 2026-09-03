@@ -184,11 +184,12 @@ MIC_DEVICE = os.environ.get(
 def build_speech_command():
     """Build the C++ speech runtime command for the selected STT backend."""
 
-    # Current Smart Turn / Speculative integration belongs to
-    # the Whisper offline runtime only.
-    if STT_BACKEND != "whisper" and ENABLE_SMART_TURN:
+    # M07: Smart Turn is supported by both Whisper and streaming
+    # Zipformer runtimes. Speculative transcription still belongs
+    # to the Whisper path only.
+    if STT_BACKEND != "whisper" and ENABLE_SPECULATIVE_TURN:
         raise RuntimeError(
-            "Smart Turn is currently supported only "
+            "Speculative turn is currently supported only "
             "with VOICE_ASSISTANT_STT=whisper"
         )
 
