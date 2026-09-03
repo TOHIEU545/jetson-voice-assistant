@@ -2,6 +2,16 @@
 
 Benchmark này so sánh ba STT backend **trong speech pipeline hiện tại của project**, không phải direct model decode.
 
+## One-command benchmark
+
+Từ repository root trên Jetson:
+
+```bash
+./benchmarks/stt/M01_model_comparison/run.sh
+```
+
+Đây là command duy nhất cần dùng cho một lần chạy M01 thông thường. `run.sh` kiểm tra input và dependency, chuẩn bị ALSA Loopback, chạy đủ ba backend, tự dọn Loopback nếu chính nó đã load, rồi in đường dẫn tới result và summary.
+
 ## Mục tiêu
 
 Chứng minh backend nào phù hợp nhất cho Jetson Nano khi chạy trong architecture thực tế đã xây dựng:
@@ -82,12 +92,6 @@ WAV
 ```
 
 Ba backend nhận cùng fixed PCM nhưng vẫn đi qua speech frontend thực tế.
-
-Setup một lần trên Jetson:
-
-```bash
-sudo modprobe snd-aloop
-```
 
 Expected devices:
 
@@ -173,12 +177,14 @@ python3 benchmarks/stt/M01_model_comparison/benchmark_stt_pipeline.py \
 git diff --check
 ```
 
-## Jetson smoke test
+## Developer/debug commands
 
-Load loopback:
+Các command dưới đây chỉ dành cho smoke test hoặc debug; normal rerun dùng `run.sh` ở đầu tài liệu.
+
+Chuẩn bị loopback thủ công nếu cần debug:
 
 ```bash
-sudo modprobe snd-aloop
+./scripts/prepare_alsa_loopback.sh load
 ```
 
 Sau khi pull:

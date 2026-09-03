@@ -958,6 +958,11 @@ def main():
     )
 
     ap.add_argument(
+        "--run-id",
+        default="",
+    )
+
+    ap.add_argument(
         "--threshold",
         type=float,
         default=0.5,
@@ -1055,7 +1060,10 @@ def main():
     run_dir = (
         Path(args.output_root)
         .resolve()
-        / now_id()
+        / (
+            args.run_id
+            or now_id()
+        )
     )
 
     config_dir = (

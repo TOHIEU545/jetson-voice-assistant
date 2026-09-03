@@ -1,5 +1,15 @@
 # M02 — Noise + GTCRN Ablation
 
+## One-command benchmark
+
+Từ repository root trên Jetson:
+
+```bash
+./benchmarks/stt/M02_noise_gtcrn_ablation/run.sh
+```
+
+Đây là command duy nhất cần dùng cho một lần chạy M02 thông thường. `run.sh` kiểm tra input và dependency, chuẩn bị ALSA Loopback, chạy GTCRN OFF/ON, tự dọn Loopback nếu chính nó đã load, rồi in đường dẫn output.
+
 ## Mục tiêu
 
 Sau M01, backend STT được cố định:
@@ -112,14 +122,12 @@ cho:
 - CPU
 - RAM
 
-## Chuẩn bị
+## Developer/debug commands
 
-Sau reboot Jetson:
+Các command dưới đây chỉ dành cho smoke test hoặc debug; normal rerun dùng `run.sh` ở đầu tài liệu. Có thể chuẩn bị Loopback thủ công bằng:
 
 ```bash
-cd ~/jetson-voice-assistant
-
-./benchmarks/stt/M01_model_comparison/prepare_alsa_loopback.sh load
+./scripts/prepare_alsa_loopback.sh load
 ```
 
 ## HOST validation
@@ -136,7 +144,7 @@ python3 \
 git diff --check
 ```
 
-## Jetson smoke
+### Jetson smoke
 
 Một WAV, cả GTCRN OFF và ON:
 
@@ -146,7 +154,7 @@ python3 \
   --limit 1
 ```
 
-## Full run
+### Full run nội bộ
 
 ```bash
 python3 \
